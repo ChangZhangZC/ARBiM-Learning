@@ -33,6 +33,22 @@ Upstream RL-100 Python sources live under `third_party/rl100/RL-100/`, rather th
 
 The RL-100 update from `7c5df9a` to `6b6afce` adds RGB augmentation key selection based on observation `shape_meta`. An intermediate commit changes the default `chunk_as_single_action` from `True` to `False` across 2D/3D diffusion and flow configurations. ARBiM experiment configurations must explicitly choose the desired chunk semantics before RL training. The update has been source-reviewed, **not** runtime-tested.
 
+## Python environment (minimal, unvalidated)
+
+The first-stage baseline is Python **3.12** with PyTorch **2.9.1** and torchvision **0.24.1**. `environment.yml` contains only a small common ML/configuration dependency set; it does **not** install the two Git submodules or any robot/simulation stack.
+
+```bash
+git submodule update --init third_party/rl100 third_party/lerobot
+conda env create -f environment.yml
+conda activate arbim-learning
+python -m pip check
+python -c "import sys, torch, torchvision; print(sys.version); print(torch.__version__, torchvision.__version__, torch.version.cuda, torch.cuda.is_available())"
+```
+
+The PyTorch wheel/CUDA runtime must be checked on the actual Linux GPU host; for a specific CUDA build use the [official PyTorch 2.9.1 install matrix](https://pytorch.org/get-started/previous-versions/). This environment is **not yet validated** with the RL-100 native policy. Its original installation was verified on Python 3.8 / torch 2.4, and native RL-100 imports may require additional compiled PyTorch3D and image-encoder dependencies. The pinned LeRobot source uses Python >=3.12 and Hugging Face Hub >=1.0; RL-100's verified Hugging Face Hub version was 0.33.1, so the combination needs a real import test.
+
+Once dataset work begins, install and test the pinned LeRobot dataset extras separately rather than pulling them into this initial baseline. DuoBench integration, ROS, robot hardware support, and RL training extras are intentionally deferred.
+
 ## Development workflow
 
 `gpt/**` (implementation) → `feature/**` (review and testing) → `dev` (squash merge after approval).
