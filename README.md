@@ -19,7 +19,7 @@ Current scope: establish the repository structure and preserve upstream sources.
 ## Pinned upstream versions
 
 - RL-100: [Lei-Kun/RL-100](https://github.com/Lei-Kun/RL-100), commit `6b6afceb7eb12525398207b5d6e66908863dc385` (2026-09-28, RGB observation augmentation fix).
-- LeRobot: [huggingface/lerobot](https://github.com/huggingface/lerobot), `v0.4.4` / commit `8fff0fde7c79f23a93d845d1a50e985de01f8b8a`.
+- LeRobot: [huggingface/lerobot](https://github.com/huggingface/lerobot), LeTools-Learning-aligned development commit `a07f22e22ce88cddff1f6eddced9ea008fbfc37c` (`pyproject.toml` version `0.5.2`; not claimed to be a tagged release).
 
 After cloning the repository:
 
@@ -27,7 +27,7 @@ After cloning the repository:
 git submodule update --init third_party/rl100 third_party/lerobot
 ```
 
-Upstream RL-100 Python sources live under `third_party/rl100/RL-100/`, rather than the outer submodule root. Submodule checkout does **not** install its dependencies. LeRobot `v0.4.4` is provisionally pinned for Python 3.11; its dependency compatibility with RL-100 is not yet validated.
+Upstream RL-100 Python sources live under `third_party/rl100/RL-100/`, rather than the outer submodule root. Submodule checkout does **not** install its dependencies. The pinned LeRobot source requires Python >=3.12. Runtime compatibility with the native RL-100 dependencies and DuoBench has not been validated; pinning a Git submodule does not install dependencies.
 
 ### Upstream behavior review
 
