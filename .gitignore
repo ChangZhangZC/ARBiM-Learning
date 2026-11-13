@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.pytest_cache/
+
+# Local datasets, artifacts and logs
+data/
+logs/
+wandb/
+outputs/*
+!outputs/.gitkeep
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+
+# Local environment
+.env
+.env.*
+.DS_Store
