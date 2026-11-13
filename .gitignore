@@ -6,11 +6,11 @@ __pycache__/
 .pytest_cache/
 
 # Local datasets, artifacts and logs
-data/
+/data/
 logs/
 wandb/
-outputs/*
-!outputs/.gitkeep
+/outputs/*
+!/outputs/.gitkeep
 *.pt
 *.pth
 *.ckpt
