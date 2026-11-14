@@ -1,10 +1,9 @@
-# Native RL-100 DP-2D IL; all available training windows participate in every full epoch.
-# State/action normalization and diffusion behavior remain upstream RL-100 native.
+# Native RL1002D / DP-2D IL training configuration.
+# Change dataset.repo_id/root and training.task to use another LeRobot v3 dataset.
+# Native RL-100 actor, loss, normalizer, diffusion and EMA remain unchanged.
 dataset:
   repo_id: RobotControlStack/duobench
   root: /home/wezley/chang/datasets/duobench/transfer_cube/sim
-  horizon: 5
-  n_obs_steps: 2
   val_ratio: 0.02
   seed: 42
   drop_padded_action_targets: true
@@ -26,6 +25,11 @@ vision:
 policy:
   model: dp3
   scheduler_type: ddim
+  # Native RL1002D.no_pre_action=True: predicted steps = horizon - n_obs_steps + 1.
+  # Here 5-2+1=4 predicted action steps; n_action_steps selects the returned slice.
+  # V1 IL currently requires n_action_steps to equal all predicted steps.
+  horizon: 5
+  n_obs_steps: 2
   n_action_steps: 4
   num_inference_steps: 10
   obs_as_global_cond: true
@@ -86,21 +90,20 @@ ema:
   min_value: 0.0
   max_value: 0.9999
 
-dataloader:
-  batch_size: 2 # start small on RTX 4090; upstream general default is 128
-  num_workers: 2 # upstream general default is 8
-  pin_memory: true
-  persistent_workers: false
-  prefetch_factor: 2
-
-experiment:
-  task: duobench_transfer_cube
+training:
+  # Run identifiers (output directory: output.root / task / method / run_name).
+  task: duobench_transfer_cube # descriptive experiment label, NOT a dataset format
   method: rl100_dp2d
   run_name: null # null = automatically generated YYYYMMDD_HHMMSS
 
-training:
   device: cuda:0
   seed: 42
+  # One training optimizer step uses this many dataset windows (single GPU).
+  batch_size: 2
+  num_workers: 2
+  pin_memory: true
+  persistent_workers: false
+  prefetch_factor: 2
   max_steps: 100000 # null disables this limit; both limits apply when set
   max_epochs: null # null disables this limit; at least one must be set
 

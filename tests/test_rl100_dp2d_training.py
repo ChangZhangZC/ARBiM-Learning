@@ -7,7 +7,7 @@ import types
 import pytest
 import torch
 
-from arbim.training.il import _validation_without_random_shifts, load_checkpoint, read_checkpoint, prepare_batch, save_checkpoint
+from arbim.training.train_rl100_dp2d import _validation_without_random_shifts, load_checkpoint, read_checkpoint, prepare_batch, save_checkpoint
 
 
 def test_prepare_batch_preserves_native_loss_contract():

@@ -6,12 +6,12 @@ The pipeline does **not** wrap RL100 in LeRobot PreTrainedPolicy.
 
 ## New training run
 
-Edit `configs/il/duobench_transfer_cube.yaml` for a real LeRobot v3 dataset.
+Edit `configs/il/rl100_dp2d.yaml` to select a LeRobot v3 dataset and set `training.task` for its experiment label. The included DuoBench values are runnable examples, not hardcoded model constraints.
 From the repository root and the prepared `arbim` environment:
 
 ```bash
 export PYTHONPATH="$PWD/src:$PWD/third_party/rl100/RL-100:$PWD/third_party/lerobot/src"
-python -m arbim.training.il --config configs/il/duobench_transfer_cube.yaml
+python -m arbim.training.train_rl100_dp2d --config configs/il/rl100_dp2d.yaml
 ```
 
 Output by default:
@@ -29,10 +29,20 @@ outputs/il/<task>/<method>/<YYYYMMDD_HHMMSS>/
     best.ckpt               # lowest measured validation loss; raw Policy
 ```
 
-Use `experiment.run_name` for an explicit run name or `output.output_dir`
+Use `training.run_name` for an explicit run name or `output.output_dir`
 for a full path. A fresh run rejects existing directories. There are no
 batch-count smoke caps in the production YAML; all eligible training windows
 are used per complete epoch.
+
+
+## YAML organization
+
+- `training.batch_size` is the **actual** batch size passed to the StepBatchSampler and DataLoader (single GPU, no gradient accumulation).
+- `training.num_workers`, `pin_memory`, `persistent_workers`, `prefetch_factor` own all DataLoader settings; there is no separate `dataloader` block.
+- `policy.horizon` is the action sampling-window horizon. Native `RL1002D.no_pre_action=True` predicts `horizon - n_obs_steps + 1` actions. `policy.n_action_steps` slices the predicted actions for inference; V1 IL requires equality with the predicted length, without changing native RL-100.
+- `dataset` contains LeRobot v3 source and episode splitting; camera/state/action dimensions are inferred from dataset metadata.
+- `training.task/method/run_name` name experiments; `output` selects the output root. Model architecture and optimizer/EMA configuration remain separate.
+- Older existing v2 runs remain resumable from their original `config_resolved.yaml`; this compatibility applies only to Resume, not to creating a new run with the obsolete schema.
 
 ## Steps, Epochs, and save triggers
 
@@ -54,7 +64,7 @@ bounds the number of periodic `step_*.ckpt` archives; `last.ckpt` and
 ## Exact Step Resume
 
 ```bash
-python -m arbim.training.il --resume \
+python -m arbim.training.train_rl100_dp2d --resume \
   outputs/il/duobench_transfer_cube/rl100_dp2d/20261115_103000
 ```
 
@@ -110,7 +120,7 @@ this IL training PR.
 ## Acceptance tests
 
 ```bash
-pytest -q tests/test_train_ops.py tests/test_il.py tests/test_lerobot_adapter.py tests/test_rl100_dp.py
+pytest -q tests/test_rl100_dp2d_train_ops.py tests/test_rl100_dp2d_training.py tests/test_lerobot_adapter.py tests/test_rl100_dp.py
 ```
 
 CPU regression tests use a tiny fake Policy to compare uninterrupted training

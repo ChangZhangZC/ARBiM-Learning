@@ -13,20 +13,23 @@ Current scope: the native RL-100 DP-2D **IL training path** runs on LeRobot v3 d
 - `src/arbim/training/`: native IL training, resume, checkpoint and telemetry.
 - `src/arbim/runtime.py`: inference interface (planned).
 - `src/arbim/integrations/`: external environment adapters (planned; DuoBench is deferred).
-- `configs/il/`, `scripts/`, `tests/`: IL experiment profiles and tests.
+- `configs/il/` and `tests/`: RL100 DP-2D IL profiles and regression tests.
 - `outputs/`: ignored local training artifacts.
 
 
 ## Native RL-100 DP-2D IL
 
-See [IL training, exact-step Resume and experiment output guide](docs/il_training.md).
-The production YAML exposes independent Steps/Epochs limits, step/epoch
-checkpoint/validation cadence, strict Resume, TensorBoard and optional W&B.
+See [IL training, exact-step Resume and experiment output guide](docs/rl100_dp2d_training.md).
+The reusable `configs/il/rl100_dp2d.yaml` profile exposes independent Steps/Epochs
+limits, step/epoch checkpoint/validation cadence, strict Resume, TensorBoard
+and optional W&B. Update its LeRobot dataset path and `training.task` for a
+new dataset; `policy.horizon/n_obs_steps/n_action_steps` are the native timing
+settings and `training.batch_size` is the DataLoader batch size.
 
 ```bash
-python -m arbim.training.il --config configs/il/duobench_transfer_cube.yaml
+python -m arbim.training.train_rl100_dp2d --config configs/il/rl100_dp2d.yaml
 # Resume the exact same training run:
-python -m arbim.training.il --resume outputs/il/<task>/<method>/<run>
+python -m arbim.training.train_rl100_dp2d --resume outputs/il/<task>/<method>/<run>
 ```
 
 RL-100's model, normalizer, `compute_loss()` and diffusion stack are left

@@ -1,4 +1,4 @@
-"""Minimal native RL-100 DP-2D imitation-learning entry for LeRobot v3."""
+"""Native RL1002D imitation-learning trainer with LeRobot v3 data adapter."""
 
 from __future__ import annotations
 
@@ -75,20 +75,43 @@ def _restore_rng(state: dict[str, Any]) -> None:
 
 
 def _contract(cfg: dict[str, Any], dataset: Any, total_steps: int,
-              steps_per_epoch: int) -> dict[str, Any]:
-    """Freeze every input that can change model updates or sampling order."""
+              steps_per_epoch: int, *, legacy: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Keep full strict reproducibility contracts for old and new run formats."""
+    keys = ("dataset", "policy", "vision", "schedulers", "optimizer",
+            "lr_scheduler", "ema")
+    if legacy is not None:
+        # Exact v2 contract used by runs created before cosmetic YAML rekeying.
+        return {
+            "dataset": copy.deepcopy(legacy["dataset"]),
+            "dataset_spec": copy.deepcopy(dataset.spec),
+            "train_episodes": tuple(dataset._train_episodes),
+            "val_episodes": tuple(dataset._val_episodes),
+            "policy": copy.deepcopy(legacy["policy"]),
+            "vision": copy.deepcopy(legacy["vision"]),
+            "schedulers": copy.deepcopy(legacy["schedulers"]),
+            "optimizer": copy.deepcopy(legacy["optimizer"]),
+            "lr_scheduler": copy.deepcopy(legacy["lr_scheduler"]),
+            "ema": copy.deepcopy(legacy["ema"]),
+            "dataloader": copy.deepcopy(legacy["dataloader"]),
+            "validation_seed": legacy["validation"]["seed"],
+            "seed": legacy["training"]["seed"],
+            "device": legacy["training"]["device"],
+            "max_steps": legacy["training"]["max_steps"],
+            "max_epochs": legacy["training"]["max_epochs"],
+            "steps_per_epoch": steps_per_epoch,
+            "total_steps": total_steps,
+        }
+    frozen = {key: copy.deepcopy(cfg[key]) for key in keys}
     return {
-        "dataset": copy.deepcopy(cfg["dataset"]),
+        **frozen,
         "dataset_spec": copy.deepcopy(dataset.spec),
         "train_episodes": tuple(dataset._train_episodes),
         "val_episodes": tuple(dataset._val_episodes),
-        "policy": copy.deepcopy(cfg["policy"]),
-        "vision": copy.deepcopy(cfg["vision"]),
-        "schedulers": copy.deepcopy(cfg["schedulers"]),
-        "optimizer": copy.deepcopy(cfg["optimizer"]),
-        "lr_scheduler": copy.deepcopy(cfg["lr_scheduler"]),
-        "ema": copy.deepcopy(cfg["ema"]),
-        "dataloader": copy.deepcopy(cfg["dataloader"]),
+        "dataloader": copy.deepcopy({
+            key: cfg["training"][key] for key in
+            ("batch_size", "num_workers", "pin_memory", "persistent_workers", "prefetch_factor")
+            if key in cfg["training"]
+        }),
         "validation_seed": cfg["validation"]["seed"],
         "seed": cfg["training"]["seed"],
         "device": cfg["training"]["device"],
@@ -97,7 +120,6 @@ def _contract(cfg: dict[str, Any], dataset: Any, total_steps: int,
         "steps_per_epoch": steps_per_epoch,
         "total_steps": total_steps,
     }
-
 
 def save_checkpoint(
     path: str | Path, policy: torch.nn.Module, optimizer: torch.optim.Optimizer,
@@ -348,10 +370,11 @@ def run(config: dict[str, Any], *, resume: str | Path | None = None,
     from arbim.data.lerobot_adapter import LeRobotDP2DDataset, build_shape_meta
     from arbim.training.run_utils import (
         StepBatchSampler, check_config, is_due, resolve_run_directory,
-        resolve_training_budget,
+        resolve_training_budget, loader_options, normalize_config,
     )
     from arbim.training.telemetry import MetricLogger
 
+    config, legacy = normalize_config(config, resume=resume is not None)
     check_config(config)
     train_cfg = config["training"]
     run_dir = resolve_run_directory(config, resume)
@@ -359,14 +382,17 @@ def run(config: dict[str, Any], *, resume: str | Path | None = None,
     if device.type == "cuda" and not torch.cuda.is_available():
         raise RuntimeError("CUDA requested but unavailable; refusing silent CPU fallback.")
     _seed_everything(int(train_cfg["seed"]))
-    train_dataset = LeRobotDP2DDataset(**config["dataset"], split="train")
+    train_dataset = LeRobotDP2DDataset(
+        **config["dataset"], horizon=config["policy"]["horizon"],
+        n_obs_steps=config["policy"]["n_obs_steps"], split="train"
+    )
     val_dataset = (train_dataset.get_validation_dataset()
                    if config["dataset"]["val_ratio"] > 0 else None)
     total_steps, steps_per_epoch = resolve_training_budget(config, len(train_dataset))
     if config["lr_scheduler"]["warmup_steps"] >= total_steps:
         print("[IL WARNING] Effective budget ends during LR warmup; "
               "check max_steps/max_epochs and lr_scheduler.warmup_steps.", flush=True)
-    contract = _contract(config, train_dataset, total_steps, steps_per_epoch)
+    contract = _contract(config, train_dataset, total_steps, steps_per_epoch, legacy=legacy)
     if stop_after is not None and (type(stop_after) is not int or
                                   not 1 <= stop_after <= total_steps):
         raise ValueError("stop_after must be within the fixed training budget.")
@@ -405,15 +431,16 @@ def run(config: dict[str, Any], *, resume: str | Path | None = None,
         _write_run_metadata(run_dir, config, train_dataset, contract)
 
     sampler = StepBatchSampler(
-        len(train_dataset), config["dataloader"]["batch_size"],
+        len(train_dataset), train_cfg["batch_size"],
         int(train_cfg["seed"]), start_step, target_step,
     )
+    loader_cfg = loader_options(config)
     train_loader = _loader(
-        train_dataset, config["dataloader"], seed=int(train_cfg["seed"]),
+        train_dataset, loader_cfg, seed=int(train_cfg["seed"]),
         batch_sampler=sampler,
     )
     val_loader = (_loader(
-        val_dataset, config["dataloader"],
+        val_dataset, loader_cfg,
         seed=int(config["validation"]["seed"]),
     ) if val_dataset is not None else None)
     # Do not let telemetry imports/initialization change training noise.
@@ -535,7 +562,7 @@ def run(config: dict[str, Any], *, resume: str | Path | None = None,
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Native RL-100 DP-2D IL training")
+    parser = argparse.ArgumentParser(description="Native RL100 DP-2D IL training")
     parser.add_argument("--config", type=Path,
                         help="YAML profile for a new run; optional on Resume.")
     parser.add_argument("--resume", type=Path,

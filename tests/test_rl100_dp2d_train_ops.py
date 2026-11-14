@@ -13,14 +13,41 @@ import yaml
 
 from arbim.training.run_utils import (
     StepBatchSampler, check_config, is_due, resolve_run_directory,
-    resolve_training_budget,
+    resolve_training_budget, normalize_config, loader_options,
 )
 
 
 def profile():
     from pathlib import Path
-    path = Path(__file__).resolve().parents[1] / "configs/il/duobench_transfer_cube.yaml"
+    path = Path(__file__).resolve().parents[1] / "configs/il/rl100_dp2d.yaml"
     return yaml.safe_load(path.read_text(encoding="utf-8"))
+
+
+
+def _as_legacy_config(cfg):
+    old = copy.deepcopy(cfg)
+    old["experiment"] = {k: old["training"].pop(k) for k in ("task", "method", "run_name")}
+    old["dataloader"] = {k: old["training"].pop(k) for k in
+                         ("batch_size", "num_workers", "pin_memory",
+                          "persistent_workers", "prefetch_factor")}
+    old["dataset"]["horizon"] = old["policy"].pop("horizon")
+    old["dataset"]["n_obs_steps"] = old["policy"].pop("n_obs_steps")
+    return old
+
+
+def test_yaml_reorganization_and_legacy_resume_mapping():
+    cfg = profile()
+    check_config(cfg)
+    assert loader_options(cfg)["batch_size"] == cfg["training"]["batch_size"]
+    assert "dataloader" not in cfg and "experiment" not in cfg
+    assert "horizon" not in cfg["dataset"]
+    old = _as_legacy_config(cfg)
+    with pytest.raises(ValueError, match="Legacy configuration"):
+        normalize_config(old, resume=False)
+    normalized, source = normalize_config(old, resume=True)
+    assert normalized == cfg
+    assert source == old
+    check_config(normalized)
 
 
 def test_config_rejects_invalid_budgets_and_legacy_smoke_keys():
@@ -40,14 +67,14 @@ def test_config_rejects_invalid_budgets_and_legacy_smoke_keys():
     with pytest.raises(ValueError, match="checkpoint.every_steps"):
         check_config(cfg)
     cfg["checkpoint"]["every_steps"] = None
-    cfg["experiment"]["task"] = "../escape"
-    with pytest.raises(ValueError, match="experiment.task"):
+    cfg["training"]["task"] = "../escape"
+    with pytest.raises(ValueError, match="training.task"):
         check_config(cfg)
 
 
 def test_steps_and_epochs_whichever_first():
     cfg = profile()
-    cfg["dataloader"]["batch_size"] = 8
+    cfg["training"]["batch_size"] = 8
     cfg["training"]["max_steps"] = None
     cfg["training"]["max_epochs"] = 2
     assert resolve_training_budget(cfg, 15) == (4, 2)
@@ -75,7 +102,7 @@ def test_step_and_epoch_checkpoint_triggers():
 def test_run_path_isolated_and_resume_keeps_original(tmp_path):
     cfg = profile()
     cfg["output"]["root"] = str(tmp_path)
-    cfg["experiment"]["run_name"] = "test1"
+    cfg["training"]["run_name"] = "test1"
     path = resolve_run_directory(cfg, None)
     assert path == tmp_path / "duobench_transfer_cube" / "rl100_dp2d" / "test1"
     (path / "checkpoints").mkdir(parents=True)
@@ -88,7 +115,7 @@ def test_run_path_isolated_and_resume_keeps_original(tmp_path):
 @pytest.fixture
 def fake_native(monkeypatch):
     """Mirror Policy/EMA/LR/data interfaces with tiny deterministic CPU modules."""
-    from arbim.training import il
+    from arbim.training import train_rl100_dp2d as il
 
     class Dataset(torch.utils.data.Dataset):
         def __init__(self, *args, split="train", **kwargs):
@@ -187,12 +214,12 @@ def test_exact_resume_matches_uninterrupted_policy_optimizer_ema_rng(
     def config(folder):
         cfg = profile()
         cfg["output"]["output_dir"] = str(folder)
-        cfg["dataloader"].update(
+        cfg["training"].update(
             batch_size=2, num_workers=0,
             prefetch_factor=None, persistent_workers=False,
         )
-        cfg["dataset"]["horizon"] = 1
-        cfg["dataset"]["n_obs_steps"] = 1
+        cfg["policy"]["horizon"] = 1
+        cfg["policy"]["n_obs_steps"] = 1
         cfg["policy"]["n_action_steps"] = 1
         cfg["training"].update(device="cpu", max_steps=9, max_epochs=4)
         cfg["lr_scheduler"]["warmup_steps"] = 0
@@ -234,10 +261,10 @@ def test_exact_resume_matches_uninterrupted_policy_optimizer_ema_rng(
 def test_resume_rejects_changed_budget_before_mutating_checkpoint(fake_native, tmp_path):
     cfg = profile()
     cfg["output"]["output_dir"] = str(tmp_path / "run")
-    cfg["dataloader"].update(
+    cfg["training"].update(
         batch_size=2, num_workers=0, prefetch_factor=None, persistent_workers=False,
     )
-    cfg["dataset"].update(horizon=1, n_obs_steps=1)
+    cfg["policy"].update(horizon=1, n_obs_steps=1)
     cfg["policy"]["n_action_steps"] = 1
     cfg["training"].update(device="cpu", max_steps=6, max_epochs=None)
     cfg["logging"]["tensorboard"]["enabled"] = False
@@ -247,3 +274,40 @@ def test_resume_rejects_changed_budget_before_mutating_checkpoint(fake_native, t
     changed["training"]["max_steps"] = 8
     with pytest.raises(ValueError, match="contract"):
         fake_native.run(changed, resume=tmp_path / "run")
+
+
+
+def test_previous_v2_run_resume_after_yaml_reorganization(fake_native, tmp_path):
+    """A real previous config_resolved.yaml stays resumable with its old contract."""
+    cfg = profile()
+    run_dir = tmp_path / "old-v2-run"
+    cfg["output"]["output_dir"] = str(run_dir)
+    cfg["training"].update(batch_size=2, num_workers=0,
+                           prefetch_factor=None, persistent_workers=False,
+                           device="cpu", max_steps=6, max_epochs=None)
+    cfg["policy"].update(horizon=1, n_obs_steps=1, n_action_steps=1)
+    cfg["lr_scheduler"]["warmup_steps"] = 0
+    cfg["checkpoint"]["every_steps"] = 2
+    cfg["logging"]["tensorboard"]["enabled"] = False
+    fake_native.run(cfg, stop_after=2)
+
+    checkpoint = run_dir / "checkpoints" / "last.ckpt"
+    payload = torch.load(checkpoint, weights_only=True)
+    previous = _as_legacy_config(cfg)
+    dataset = types.SimpleNamespace(
+        spec=payload["contract"]["dataset_spec"],
+        _train_episodes=payload["contract"]["train_episodes"],
+        _val_episodes=payload["contract"]["val_episodes"],
+    )
+    payload["contract"] = fake_native._contract(
+        cfg, dataset, total_steps=6, steps_per_epoch=4, legacy=previous
+    )
+    torch.save(payload, checkpoint)
+    (run_dir / "config_resolved.yaml").write_text(
+        yaml.safe_dump(previous, sort_keys=False), encoding="utf-8"
+    )
+    fake_native.run(previous, resume=run_dir)
+    final = torch.load(checkpoint, weights_only=True)
+    assert final["global_step"] == 6
+    assert final["contract"]["dataset"] == previous["dataset"]
+    assert final["contract"]["dataloader"] == previous["dataloader"]
