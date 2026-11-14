@@ -12,7 +12,7 @@ dataset:
 vision:
   rgb_model:
     name: resnet18
-    weights: r3m
+    weights: r3m # r3m, IMAGENET1K_V1, or null (random initialization)
   resize_shape: [224, 224]
   crop_shape: null
   random_crop: true  # inactive when crop_shape=null
