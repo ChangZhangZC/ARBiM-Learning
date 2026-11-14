@@ -1,0 +1,104 @@
+# V1 smoke-safe profile. For a full IL experiment, explicitly adjust epochs,
+# max_train_batches and batch size only after GPU integration tests.
+dataset:
+  repo_id: RobotControlStack/duobench
+  root: /home/wezley/chang/datasets/duobench/transfer_cube/sim
+  horizon: 5
+  n_obs_steps: 2
+  val_ratio: 0.02
+  seed: 42
+  drop_padded_action_targets: true
+
+vision:
+  rgb_model:
+    name: resnet18
+    weights: r3m
+  resize_shape: [224, 224]
+  crop_shape: null
+  random_crop: true  # inactive when crop_shape=null
+  use_group_norm: true
+  share_rgb_model: false
+  imagenet_norm: true
+  use_agent_pos: true
+  use_vib: false
+  use_recon: false
+
+policy:
+  model: dp3
+  scheduler_type: ddim
+  n_action_steps: 4
+  num_inference_steps: 10
+  obs_as_global_cond: true
+  diffusion_step_embed_dim: 256
+  down_dims: [256, 512, 1024]
+  kernel_size: 5
+  n_groups: 8
+  condition_type: film
+  use_down_condition: true
+  use_mid_condition: true
+  use_up_condition: true
+  encoder_type: resnet
+  w_pc: false
+  use_aug: false
+  use_recon: false
+  action_norm: true
+  use_agent_pos: true
+
+schedulers:
+  ddim:
+    _target_: rl_100.unidpg.diffusion_policy.diffusers_patch.ddim_with_logprob_dpok.DDIMSchedulerExtended
+    num_train_timesteps: 100
+    beta_start: 0.0001
+    beta_end: 0.02
+    beta_schedule: squaredcos_cap_v2
+    clip_sample: true
+    set_alpha_to_one: true
+    steps_offset: 1
+    prediction_type: epsilon
+    clip_std_min: 0.0067
+    clip_std_max: null
+  cm:
+    _target_: rl_100.unidpg.diffusion_policy.diffusers_patch.lcm_scheduler.LCMSchedulerExtended
+    num_train_timesteps: 100
+    beta_start: 0.0001
+    beta_end: 0.02
+    beta_schedule: squaredcos_cap_v2
+    clip_sample: true
+    set_alpha_to_one: true
+    steps_offset: 1
+    prediction_type: sample
+    original_inference_steps: 10
+    clip_std_min: 0.0067
+    clip_std_max: null
+
+optimizer:
+  lr: 0.0001
+  betas: [0.95, 0.999]
+  eps: 1.0e-8
+  weight_decay: 1.0e-6
+lr_scheduler:
+  name: cosine
+  warmup_steps: 500
+ema:
+  update_after_step: 0
+  inv_gamma: 1.0
+  power: 0.75
+  min_value: 0.0
+  max_value: 0.9999
+
+dataloader:
+  batch_size: 2 # start small on RTX 4090; upstream general default is 128
+  num_workers: 2 # upstream general default is 8
+  pin_memory: true
+  persistent_workers: false
+  prefetch_factor: 2
+
+training:
+  device: cuda:0
+  seed: 42
+  num_epochs: 1 # smoke safety; upstream general default is 1600
+  max_train_batches: 1 # null for a full epoch
+  max_val_batches: 1 # null for full validation
+  validate_every: 1
+  checkpoint_every: 1
+  output_dir: outputs/il/duobench_transfer_cube
