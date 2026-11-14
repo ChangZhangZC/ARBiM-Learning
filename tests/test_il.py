@@ -7,7 +7,7 @@ import types
 import pytest
 import torch
 
-from arbim.training.il import load_checkpoint, prepare_batch, save_checkpoint
+from arbim.training.il import _validation_without_random_shifts, load_checkpoint, prepare_batch, save_checkpoint
 
 
 def test_prepare_batch_preserves_native_loss_contract():
@@ -29,6 +29,20 @@ def test_prepare_batch_preserves_native_loss_contract():
     batch["action_is_pad"][0, -1] = True
     with pytest.raises(ValueError, match="padded"):
         prepare_batch(batch, torch.device("cpu"))
+
+
+@pytest.mark.parametrize("use_aug", [False, True])
+def test_validation_temporarily_disables_random_shifts(use_aug):
+    policy = types.SimpleNamespace(use_aug=use_aug)
+    with _validation_without_random_shifts(policy):
+        assert policy.use_aug is False
+    assert policy.use_aug is use_aug
+
+    with pytest.raises(RuntimeError, match="interrupted"):
+        with _validation_without_random_shifts(policy):
+            assert policy.use_aug is False
+            raise RuntimeError("interrupted")
+    assert policy.use_aug is use_aug
 
 
 def test_checkpoint_strict_roundtrip(tmp_path, monkeypatch):

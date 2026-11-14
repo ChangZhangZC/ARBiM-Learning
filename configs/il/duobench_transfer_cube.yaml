@@ -13,11 +13,11 @@ vision:
   rgb_model:
     name: resnet18
     weights: r3m # r3m, IMAGENET1K_V1, or null (random initialization)
-  resize_shape: [224, 224]
-  crop_shape: null
-  random_crop: true  # inactive when crop_shape=null
+  resize_shape: [224, 224] # [height, width], or null to keep original size
+  crop_shape: null # null disables cropping; e.g. [200, 200] enables it
+  random_crop: true # used only when crop_shape is set; false = center crop
   use_group_norm: true
-  share_rgb_model: false
+  share_rgb_model: false # false = independent RGB backbones, true = shared
   imagenet_norm: true
   use_agent_pos: true
   use_vib: false
@@ -39,7 +39,7 @@ policy:
   use_up_condition: true
   encoder_type: resnet
   w_pc: false
-  use_aug: false
+  use_aug: false # true = native RandomShiftsAug during training only
   use_recon: false
   action_norm: true
   use_agent_pos: true
