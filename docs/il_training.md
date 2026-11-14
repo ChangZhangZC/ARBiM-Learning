@@ -58,6 +58,14 @@ python -m arbim.training.il --resume \
   outputs/il/duobench_transfer_cube/rl100_dp2d/20261115_103000
 ```
 
+**Native RL-100 Normalizer load-order compatibility:** On Resume, the entire Policy
+(including its dynamically reconstructed `DictOfTensorMixin` Normalizer) is
+strict-loaded on CPU before moving to the training device. Only then are the
+Optimizer and EMA constructed; the restored EMA state is separately moved to
+the device after strict load. This is necessary because the native Normalizer
+replaces registered ParameterDict objects when loading weights. The original
+Checkpoint remains valid after a failed Resume before the next save.
+
 With `--resume DIR`, the saved `config_resolved.yaml` is used unless an
 updated `--config` is explicitly passed. This always uses
 `DIR/checkpoints/last.ckpt`, continues logging in the **same** run directory,
