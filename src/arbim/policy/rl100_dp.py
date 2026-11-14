@@ -25,10 +25,6 @@ def build_rl100_dp(shape_meta: Mapping[str, Any], config: Mapping[str, Any]):
     rgb_cfg = dict(vision_cfg.pop("rgb_model"))
     if policy_cfg.get("model") != "dp3" or policy_cfg.get("scheduler_type") != "ddim":
         raise ValueError("Task 3 V1 requires native model='dp3' and scheduler_type='ddim'.")
-    if vision_cfg.get("share_rgb_model") is not False:
-        raise ValueError("Task 3 V1 requires separate native camera encoders.")
-    if vision_cfg.get("crop_shape") is not None or policy_cfg.get("use_aug") is not False:
-        raise ValueError("Task 3 V1 disables random crop and additional RGB shifts.")
     if policy_cfg.get("use_recon") or vision_cfg.get("use_recon") or vision_cfg.get("use_vib"):
         raise ValueError("Task 3 V1 disables reconstruction and VIB objectives.")
 
