@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import math
 import re
 from datetime import datetime
@@ -18,32 +19,75 @@ def _positive_or_none(value: Any, key: str) -> int | None:
     return value
 
 
+
+_DATALOADER_FIELDS = ("batch_size", "num_workers", "pin_memory",
+                      "persistent_workers", "prefetch_factor")
+
+
+def loader_options(cfg: dict[str, Any]) -> dict[str, Any]:
+    """Read DataLoader arguments from the canonical training settings."""
+    return {key: cfg["training"][key] for key in _DATALOADER_FIELDS
+            if key in cfg["training"]}
+
+
+def normalize_config(cfg: dict[str, Any], *, resume: bool) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    """Support strict Resume of pre-restructure v2 runs, not legacy fresh runs.
+
+    Original YAML/contract are preserved for existing run directories; the new
+    schema alone is used when creating a fresh experiment.
+    """
+    if not isinstance(cfg, dict):
+        raise ValueError("Training configuration must be a YAML mapping.")
+    legacy = ("experiment" in cfg or "dataloader" in cfg
+              or "horizon" in cfg.get("dataset", {})
+              or "n_obs_steps" in cfg.get("dataset", {}))
+    if not legacy:
+        return cfg, None
+    if not resume:
+        raise ValueError("Legacy configuration: move experiment/dataloader to training "
+                         "and dataset.horizon/n_obs_steps to policy.")
+    original = copy.deepcopy(cfg)
+    if not (isinstance(original.get("experiment"), dict)
+            and isinstance(original.get("dataloader"), dict)
+            and "horizon" in original["dataset"]
+            and "n_obs_steps" in original["dataset"]):
+        raise ValueError("Incomplete legacy run configuration; cannot safely resume.")
+    canonical = copy.deepcopy(original)
+    canonical["policy"]["horizon"] = canonical["dataset"].pop("horizon")
+    canonical["policy"]["n_obs_steps"] = canonical["dataset"].pop("n_obs_steps")
+    canonical["training"].update(canonical.pop("experiment"))
+    canonical["training"].update(canonical.pop("dataloader"))
+    return canonical, original
+
+
 def check_config(cfg: dict[str, Any]) -> None:
-    """Reject invalid budgets and run options before dataset/model initialization."""
+    """Validate the cleaned schema before any dataset/model construction."""
     for key in ("dataset", "policy", "vision", "schedulers", "optimizer",
-                "lr_scheduler", "ema", "dataloader", "training", "experiment",
-                "output", "checkpoint", "validation", "logging"):
+                "lr_scheduler", "ema", "training", "output", "checkpoint",
+                "validation", "logging"):
         if key not in cfg or not isinstance(cfg[key], dict):
             raise ValueError(f"Missing configuration mapping: {key}")
-    tr, dl = cfg["training"], cfg["dataloader"]
-    for obsolete in ("num_epochs", "max_train_batches", "max_val_batches",
-                     "validate_every", "checkpoint_every"):
-        if obsolete in tr:
-            raise ValueError(f"Legacy training.{obsolete} is unsupported; use new sections.")
-    a = _positive_or_none(tr.get("max_steps"), "training.max_steps")
-    b = _positive_or_none(tr.get("max_epochs"), "training.max_epochs")
-    if a is None and b is None:
+    if "experiment" in cfg or "dataloader" in cfg:
+        raise ValueError("Use training.task/batch_size instead of experiment/dataloader.")
+    tr, policy = cfg["training"], cfg["policy"]
+    for old in ("num_epochs", "max_train_batches", "max_val_batches",
+                "validate_every", "checkpoint_every"):
+        if old in tr:
+            raise ValueError(f"Legacy training.{old} is unsupported.")
+    steps = _positive_or_none(tr.get("max_steps"), "training.max_steps")
+    epochs = _positive_or_none(tr.get("max_epochs"), "training.max_epochs")
+    if steps is None and epochs is None:
         raise ValueError("Set training.max_steps and/or training.max_epochs.")
-    if _positive_or_none(dl.get("batch_size"), "dataloader.batch_size") is None:
-        raise ValueError("dataloader.batch_size is required.")
-    if "drop_last" in dl:
-        raise ValueError("dataloader.drop_last is unsupported: all eligible windows must count.")
-    nworkers = dl.get("num_workers", 0)
-    if type(nworkers) is not int or nworkers < 0:
-        raise ValueError("dataloader.num_workers must be a nonnegative integer.")
-    if nworkers == 0 and dl.get("persistent_workers"):
+    if _positive_or_none(tr.get("batch_size"), "training.batch_size") is None:
+        raise ValueError("training.batch_size is required.")
+    if "drop_last" in tr:
+        raise ValueError("Do not use training.drop_last; a full epoch includes all eligible windows.")
+    workers = tr.get("num_workers", 0)
+    if type(workers) is not int or workers < 0:
+        raise ValueError("training.num_workers must be a nonnegative integer.")
+    if workers == 0 and tr.get("persistent_workers"):
         raise ValueError("persistent_workers requires num_workers > 0.")
-    if nworkers == 0 and dl.get("prefetch_factor") is not None:
+    if workers == 0 and tr.get("prefetch_factor") is not None:
         raise ValueError("prefetch_factor requires num_workers > 0.")
     for name in ("every_steps", "every_epochs"):
         for section in ("checkpoint", "validation"):
@@ -52,18 +96,13 @@ def check_config(cfg: dict[str, Any]) -> None:
         raise ValueError("logging.log_freq_steps is required.")
     if _positive_or_none(cfg["checkpoint"].get("keep_last"), "checkpoint.keep_last") is None:
         raise ValueError("checkpoint.keep_last is required.")
-    if not isinstance(cfg["logging"].get("progress_bar"), bool):
-        raise ValueError("logging.progress_bar must be boolean.")
-    if not isinstance(cfg["logging"].get("jsonl"), bool):
-        raise ValueError("logging.jsonl must be boolean.")
+    for section, field in (("logging", "progress_bar"), ("logging", "jsonl"),
+                           ("validation", "on_finish"), ("checkpoint", "enabled"),
+                           ("checkpoint", "save_on_finish")):
+        if not isinstance(cfg[section].get(field), bool):
+            raise ValueError(f"{section}.{field} must be boolean.")
     if not isinstance(cfg["validation"].get("seed"), int):
         raise ValueError("validation.seed must be integer.")
-    if not isinstance(cfg["validation"].get("on_finish"), bool):
-        raise ValueError("validation.on_finish must be boolean.")
-    if not isinstance(cfg["checkpoint"].get("enabled"), bool):
-        raise ValueError("checkpoint.enabled must be boolean.")
-    if not isinstance(cfg["checkpoint"].get("save_on_finish"), bool):
-        raise ValueError("checkpoint.save_on_finish must be boolean.")
     if (cfg["checkpoint"]["enabled"] and not cfg["checkpoint"]["save_on_finish"]
         and cfg["checkpoint"].get("every_steps") is None
         and cfg["checkpoint"].get("every_epochs") is None):
@@ -77,36 +116,36 @@ def check_config(cfg: dict[str, Any]) -> None:
             raise ValueError("Enabled WandB requires logging.wandb.project.")
         if cfg["logging"]["wandb"].get("mode", "online") not in ("online", "offline", "disabled"):
             raise ValueError("logging.wandb.mode must be online, offline or disabled.")
-    for k in ("task", "method"):
-        name = cfg["experiment"].get(k)
-        if not isinstance(name, str) or not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9_.-]*", name) or name in (".", ".."):
-            raise ValueError(f"experiment.{k} must be a safe path component.")
-    run_name = cfg["experiment"].get("run_name")
+    for key in ("task", "method"):
+        value = tr.get(key)
+        if not isinstance(value, str) or not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9_.-]*", value):
+            raise ValueError(f"training.{key} must be a safe path component.")
+    run_name = tr.get("run_name")
     if run_name is not None and (
         not isinstance(run_name, str)
         or not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9_.-]*", run_name)
-        or run_name in (".", "..")
     ):
-        raise ValueError("experiment.run_name must be null or a safe path component.")
-    ds = cfg["dataset"]
-    if ds["horizon"] < ds["n_obs_steps"] or ds["n_obs_steps"] < 1:
-        raise ValueError("dataset.horizon must be >= dataset.n_obs_steps >= 1.")
-    if cfg["policy"]["n_action_steps"] != ds["horizon"] - ds["n_obs_steps"] + 1:
-        raise ValueError("policy.n_action_steps must equal horizon-n_obs_steps+1.")
+        raise ValueError("training.run_name must be null or a safe path component.")
+    if not isinstance(policy.get("horizon"), int) or not isinstance(policy.get("n_obs_steps"), int):
+        raise ValueError("policy.horizon and policy.n_obs_steps must be positive integers.")
+    if policy["n_obs_steps"] < 1 or policy["horizon"] < policy["n_obs_steps"]:
+        raise ValueError("policy.horizon must be >= policy.n_obs_steps >= 1.")
+    if policy["n_action_steps"] != policy["horizon"] - policy["n_obs_steps"] + 1:
+        raise ValueError("policy.n_action_steps must equal horizon-n_obs_steps+1 for current V1.")
     seed = tr.get("seed")
     if type(seed) is not int or seed < 0:
-        raise ValueError("training.seed must be a nonnegative integer.")
+        raise ValueError("training.seed must be nonnegative integer.")
     if cfg["lr_scheduler"]["warmup_steps"] < 0:
         raise ValueError("lr_scheduler.warmup_steps must be nonnegative.")
     if cfg["output"].get("output_dir") is not None and not str(cfg["output"]["output_dir"]).strip():
         raise ValueError("output.output_dir must be null or a nonempty path.")
     if cfg["output"].get("output_dir") is None and not cfg["output"].get("root"):
-        raise ValueError("output.root must be set when output_dir is null.")
+        raise ValueError("output.root is required when output.output_dir is null.")
 
 
 def resolve_training_budget(cfg: dict[str, Any], train_windows: int) -> tuple[int, int]:
     """Return (effective optimizer steps, steps per full epoch)."""
-    batch_size = cfg["dataloader"]["batch_size"]
+    batch_size = cfg["training"]["batch_size"]
     if train_windows < 1:
         raise ValueError("No eligible training windows.")
     steps_per_epoch = math.ceil(train_windows / batch_size)
@@ -166,8 +205,8 @@ def resolve_run_directory(cfg: dict[str, Any], resume: str | Path | None) -> Pat
     if output.get("output_dir") is not None:
         run_dir = Path(output["output_dir"])
     else:
-        prefix = Path(output["root"]) / cfg["experiment"]["task"] / cfg["experiment"]["method"]
-        run_name = cfg["experiment"].get("run_name") or datetime.now().strftime("%Y%m%d_%H%M%S")
+        prefix = Path(output["root"]) / cfg["training"]["task"] / cfg["training"]["method"]
+        run_name = cfg["training"].get("run_name") or datetime.now().strftime("%Y%m%d_%H%M%S")
         run_dir = prefix / run_name
     run_dir = run_dir.expanduser().resolve()
     if run_dir.exists():
