@@ -340,6 +340,9 @@ def run(config: dict[str, Any], *, resume: str | Path | None = None,
     val_dataset = (train_dataset.get_validation_dataset()
                    if config["dataset"]["val_ratio"] > 0 else None)
     total_steps, steps_per_epoch = resolve_training_budget(config, len(train_dataset))
+    if config["lr_scheduler"]["warmup_steps"] >= total_steps:
+        print("[IL WARNING] Effective budget ends during LR warmup; "
+              "check max_steps/max_epochs and lr_scheduler.warmup_steps.", flush=True)
     contract = _contract(config, train_dataset, total_steps, steps_per_epoch)
     if stop_after is not None and (type(stop_after) is not int or
                                   not 1 <= stop_after <= total_steps):
