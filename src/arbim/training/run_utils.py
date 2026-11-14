@@ -34,8 +34,10 @@ def check_config(cfg: dict[str, Any]) -> None:
     b = _positive_or_none(tr.get("max_epochs"), "training.max_epochs")
     if a is None and b is None:
         raise ValueError("Set training.max_steps and/or training.max_epochs.")
-    for name in ("batch_size",):
-        _positive_or_none(dl.get(name), f"dataloader.{name}")
+    if _positive_or_none(dl.get("batch_size"), "dataloader.batch_size") is None:
+        raise ValueError("dataloader.batch_size is required.")
+    if "drop_last" in dl:
+        raise ValueError("dataloader.drop_last is unsupported: all eligible windows must count.")
     nworkers = dl.get("num_workers", 0)
     if type(nworkers) is not int or nworkers < 0:
         raise ValueError("dataloader.num_workers must be a nonnegative integer.")
