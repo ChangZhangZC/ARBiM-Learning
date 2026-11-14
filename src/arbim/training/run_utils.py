@@ -42,8 +42,18 @@ def check_config(cfg: dict[str, Any]) -> None:
     for name in ("every_steps", "every_epochs"):
         for section in ("checkpoint", "validation"):
             _positive_or_none(cfg[section].get(name), f"{section}.{name}")
-    _positive_or_none(cfg["logging"].get("log_freq_steps"), "logging.log_freq_steps")
-    _positive_or_none(cfg["checkpoint"].get("keep_last"), "checkpoint.keep_last")
+    if _positive_or_none(cfg["logging"].get("log_freq_steps"), "logging.log_freq_steps") is None:
+        raise ValueError("logging.log_freq_steps is required.")
+    if _positive_or_none(cfg["checkpoint"].get("keep_last"), "checkpoint.keep_last") is None:
+        raise ValueError("checkpoint.keep_last is required.")
+    if not isinstance(cfg["logging"].get("progress_bar"), bool):
+        raise ValueError("logging.progress_bar must be boolean.")
+    if not isinstance(cfg["logging"].get("jsonl"), bool):
+        raise ValueError("logging.jsonl must be boolean.")
+    if not isinstance(cfg["validation"].get("seed"), int):
+        raise ValueError("validation.seed must be integer.")
+    if not isinstance(cfg["validation"].get("on_finish"), bool):
+        raise ValueError("validation.on_finish must be boolean.")
     if not isinstance(cfg["checkpoint"].get("enabled"), bool):
         raise ValueError("checkpoint.enabled must be boolean.")
     if not isinstance(cfg["checkpoint"].get("save_on_finish"), bool):
@@ -77,6 +87,8 @@ def check_config(cfg: dict[str, Any]) -> None:
         raise ValueError("lr_scheduler.warmup_steps must be nonnegative.")
     if cfg["output"].get("output_dir") is not None and not str(cfg["output"]["output_dir"]).strip():
         raise ValueError("output.output_dir must be null or a nonempty path.")
+    if cfg["output"].get("output_dir") is None and not cfg["output"].get("root"):
+        raise ValueError("output.root must be set when output_dir is null.")
 
 
 def resolve_training_budget(cfg: dict[str, Any], train_windows: int) -> tuple[int, int]:
@@ -130,6 +142,9 @@ class StepBatchSampler(Sampler[list[int]]):
 def resolve_run_directory(cfg: dict[str, Any], resume: str | Path | None) -> Path:
     if resume is not None:
         resume_path = Path(resume).expanduser().resolve()
+        if resume_path.is_file() and (resume_path.name != "last.ckpt" or
+                                      resume_path.parent.name != "checkpoints"):
+            raise ValueError("Resume file must be checkpoints/last.ckpt; snapshots are not auto-selected.")
         run_dir = resume_path.parent.parent if resume_path.is_file() else resume_path
         if not (run_dir / "checkpoints" / "last.ckpt").is_file():
             raise FileNotFoundError(f"No resumable checkpoints/last.ckpt under {run_dir}")
