@@ -27,24 +27,19 @@ class MetricLogger:
             if wb_cfg["enabled"]:
                 import wandb
                 id_path = run_dir / "wandb_run_id.txt"
-                if resumed:
-                    if not id_path.is_file():
-                        raise FileNotFoundError("WandB resume requires original wandb_run_id.txt")
-                    run_id = id_path.read_text(encoding="utf-8").strip()
-                    if not run_id:
-                        raise ValueError("Empty WandB run ID in existing run.")
-                else:
-                    run_id = None
+                run_id = id_path.read_text(encoding="utf-8").strip() if resumed and id_path.is_file() else None
+                if resumed and id_path.is_file() and not run_id:
+                    raise ValueError("Empty WandB run ID in existing run.")
                 self.wb = wandb.init(
                     project=wb_cfg["project"], entity=wb_cfg.get("entity"),
                     mode=wb_cfg.get("mode", "online"), dir=str(run_dir),
                     name=run_dir.name, id=run_id,
-                    resume="must" if resumed else None,
+                    resume="allow" if run_id else None,
                     config=cfg,
                 )
                 if self.wb is None or not getattr(self.wb, "id", None):
                     raise RuntimeError("WandB initialization failed.")
-                if not resumed:
+                if not run_id:
                     id_path.write_text(self.wb.id + "\n", encoding="utf-8")
                 self.wb.define_metric("global_step")
                 self.wb.define_metric("train/*", step_metric="global_step")
@@ -65,7 +60,8 @@ class MetricLogger:
                 self.tb.add_scalar(key, value, global_step=step)
             self.tb.flush()
         if self.wb is not None:
-            self.wb.log({"global_step": step, **scalar}, step=step)
+            # Use global_step as the chart x-axis; train and val may share a step.
+            self.wb.log({"global_step": step, **scalar})
 
     def close(self) -> None:
         if self.tb is not None:
