@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import copy
 import random
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -126,6 +127,17 @@ def load_checkpoint(
     return int(payload["next_epoch"]), int(payload["global_step"])
 
 
+@contextmanager
+def _validation_without_random_shifts(policy: Any):
+    """Native compute_loss checks use_aug even in eval mode; disable shifts only for validation."""
+    old_value = policy.use_aug
+    policy.use_aug = False
+    try:
+        yield
+    finally:
+        policy.use_aug = old_value
+
+
 def _loader(dataset: Any, config: dict[str, Any], shuffle: bool) -> DataLoader:
     options = dict(config)
     if options.get("num_workers", 0) == 0:
@@ -204,7 +216,7 @@ def run(config: dict[str, Any], *, resume: str | Path | None = None) -> None:
             policy.eval()
             val_losses = []
             max_val = train_cfg.get("max_val_batches")
-            with torch.no_grad():
+            with torch.no_grad(), _validation_without_random_shifts(policy):
                 for index, batch in enumerate(val_loader):
                     if max_val is not None and index >= max_val:
                         break
