@@ -1,5 +1,5 @@
-# V1 smoke-safe profile. For a full IL experiment, explicitly adjust epochs,
-# max_train_batches and batch size only after GPU integration tests.
+# Native RL-100 DP-2D IL; all available training windows participate in every full epoch.
+# State/action normalization and diffusion behavior remain upstream RL-100 native.
 dataset:
   repo_id: RobotControlStack/duobench
   root: /home/wezley/chang/datasets/duobench/transfer_cube/sim
@@ -93,12 +93,42 @@ dataloader:
   persistent_workers: false
   prefetch_factor: 2
 
+experiment:
+  task: duobench_transfer_cube
+  method: rl100_dp2d
+  run_name: null # null = automatically generated YYYYMMDD_HHMMSS
+
 training:
   device: cuda:0
   seed: 42
-  num_epochs: 1 # smoke safety; upstream general default is 1600
-  max_train_batches: 1 # null for a full epoch
-  max_val_batches: 1 # null for full validation
-  validate_every: 1
-  checkpoint_every: 1
-  output_dir: outputs/il/duobench_transfer_cube
+  max_steps: 100000 # null disables this limit; both limits apply when set
+  max_epochs: null # null disables this limit; at least one must be set
+
+output:
+  root: outputs/il
+  output_dir: null # explicitly set a run path or use task/method/timestamp above
+
+checkpoint:
+  enabled: true
+  every_steps: 2000 # null disables step-based snapshots
+  every_epochs: null # null disables epoch-based snapshots
+  save_on_finish: true
+  keep_last: 3 # number of step_*.ckpt snapshots; last.ckpt always retained
+
+validation:
+  every_steps: 1000
+  every_epochs: null
+  on_finish: true
+  seed: 1234 # fixed diffusion-noise seed; training RNG restored afterward
+
+logging:
+  log_freq_steps: 50
+  progress_bar: true
+  jsonl: true
+  tensorboard:
+    enabled: true # pip install tensorboard
+  wandb:
+    enabled: false # optional: pip install wandb
+    project: arbim_il
+    entity: null
+    mode: online # online, offline or disabled
