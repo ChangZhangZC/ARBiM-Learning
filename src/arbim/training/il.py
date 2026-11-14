@@ -444,10 +444,10 @@ def run(config: dict[str, Any], *, resume: str | Path | None = None,
                         "update_s": update_time,
                     }
                     logger_rng = _rng_state()
-                try:
-                    logger.log("train", step, **metrics)
-                finally:
-                    _restore_rng(logger_rng)
+                    try:
+                        logger.log("train", step, **metrics)
+                    finally:
+                        _restore_rng(logger_rng)
                     progress.set_postfix(
                         loss=f"{metrics['loss']:.4f}",
                         lr=f"{metrics['lr']:.1e}", epoch=f"{epoch_fraction:.2f}",
