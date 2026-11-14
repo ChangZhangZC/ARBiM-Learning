@@ -45,6 +45,7 @@ def test_validation_temporarily_disables_random_shifts(use_aug):
     assert policy.use_aug is use_aug
 
 
+
 def test_checkpoint_strict_roundtrip(tmp_path, monkeypatch):
     pkg = types.ModuleType("rl_100")
     pkg.__path__ = []
@@ -70,22 +71,24 @@ def test_checkpoint_strict_roundtrip(tmp_path, monkeypatch):
     scheduler.step()
     ema.averaged_model.load_state_dict(policy.state_dict())
     ema.optimization_step, ema.decay = 7, 0.9
-    path = tmp_path / "latest.ckpt"
-    contract = {"dataset_spec": {"state_dim": 3}, "num_epochs": 8}
+    path = tmp_path / "last.ckpt"
+    contract = {"dataset_spec": {"state_dim": 3}, "total_steps": 20, "steps_per_epoch": 5}
     save_checkpoint(path, policy, optimizer, scheduler, ema,
-                    next_epoch=3, global_step=7, contract=contract)
+                    global_step=7, contract=contract, best_val_loss=0.5, best_step=5)
 
     restored, restored_optim, restored_sched, restored_ema = components()
-    start_epoch, step = load_checkpoint(
+    step, best_loss, best_step = load_checkpoint(
         path, restored, restored_optim, restored_sched, restored_ema,
         contract=contract, device=torch.device("cpu"))
-    assert (start_epoch, step) == (3, 7)
+    assert (step, best_loss, best_step) == (7, 0.5, 5)
     assert restored_ema.optimization_step == 7
     assert restored_ema.decay == 0.9
     assert restored_sched.state_dict()["last_epoch"] == scheduler.state_dict()["last_epoch"]
     assert restored_optim.state_dict()["state"]
+    assert torch.load(path, weights_only=True)["batch_offset"] == 2
     for before, after in zip(policy.parameters(), restored.parameters()):
         torch.testing.assert_close(before, after)
     with pytest.raises(ValueError, match="contract"):
         load_checkpoint(path, restored, restored_optim, restored_sched,
-                        restored_ema, contract={"dataset_spec": {}}, device=torch.device("cpu"))
+                        restored_ema, contract={**contract, "total_steps": 21},
+                        device=torch.device("cpu"))
