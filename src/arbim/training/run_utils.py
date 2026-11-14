@@ -26,6 +26,10 @@ def check_config(cfg: dict[str, Any]) -> None:
         if key not in cfg or not isinstance(cfg[key], dict):
             raise ValueError(f"Missing configuration mapping: {key}")
     tr, dl = cfg["training"], cfg["dataloader"]
+    for obsolete in ("num_epochs", "max_train_batches", "max_val_batches",
+                     "validate_every", "checkpoint_every"):
+        if obsolete in tr:
+            raise ValueError(f"Legacy training.{obsolete} is unsupported; use new sections.")
     a = _positive_or_none(tr.get("max_steps"), "training.max_steps")
     b = _positive_or_none(tr.get("max_epochs"), "training.max_epochs")
     if a is None and b is None:
@@ -58,6 +62,10 @@ def check_config(cfg: dict[str, Any]) -> None:
         raise ValueError("checkpoint.enabled must be boolean.")
     if not isinstance(cfg["checkpoint"].get("save_on_finish"), bool):
         raise ValueError("checkpoint.save_on_finish must be boolean.")
+    if (cfg["checkpoint"]["enabled"] and not cfg["checkpoint"]["save_on_finish"]
+        and cfg["checkpoint"].get("every_steps") is None
+        and cfg["checkpoint"].get("every_epochs") is None):
+        raise ValueError("Checkpoint enabled but all save triggers are disabled.")
     for section in ("tensorboard", "wandb"):
         item = cfg["logging"].get(section)
         if not isinstance(item, dict) or not isinstance(item.get("enabled"), bool):
@@ -83,6 +91,9 @@ def check_config(cfg: dict[str, Any]) -> None:
         raise ValueError("dataset.horizon must be >= dataset.n_obs_steps >= 1.")
     if cfg["policy"]["n_action_steps"] != ds["horizon"] - ds["n_obs_steps"] + 1:
         raise ValueError("policy.n_action_steps must equal horizon-n_obs_steps+1.")
+    seed = tr.get("seed")
+    if type(seed) is not int or seed < 0:
+        raise ValueError("training.seed must be a nonnegative integer.")
     if cfg["lr_scheduler"]["warmup_steps"] < 0:
         raise ValueError("lr_scheduler.warmup_steps must be nonnegative.")
     if cfg["output"].get("output_dir") is not None and not str(cfg["output"]["output_dir"]).strip():
