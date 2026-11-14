@@ -10,17 +10,18 @@ from arbim.policy.rl100_dp import build_rl100_dp
 
 @pytest.mark.parametrize("weights", ["r3m", "IMAGENET1K_V1", None])
 @pytest.mark.parametrize(
-    "share_rgb_model,crop_shape,random_crop,use_aug",
+    "share_rgb_model,resize_shape,crop_shape,random_crop,use_aug",
     [
-        (False, None, True, False), # unchanged baseline
-        (True, None, True, False), # shared backbone
-        (False, [200, 200], True, True), # random crop + shifts
-        (False, [200, 200], False, False), # center crop
-        (True, [200, 200], True, True), # combined native options
+        (False, [224, 224], None, True, False), # unchanged baseline
+        (True, [224, 224], None, True, False), # shared backbone
+        (False, [224, 224], [200, 200], True, True), # random crop + shifts
+        (False, [256, 256], [200, 200], False, False), # alternative resize + center crop
+        (True, [224, 224], [200, 200], True, True), # combined native options
+        (False, None, None, True, False), # keep original image resolution
     ],
 )
 def test_factory_uses_unmodified_native_classes(
-    monkeypatch, weights, share_rgb_model, crop_shape, random_crop, use_aug
+    monkeypatch, weights, share_rgb_model, resize_shape, crop_shape, random_crop, use_aug
 ):
     def module(name):
         m = types.ModuleType(name)
@@ -51,7 +52,7 @@ def test_factory_uses_unmodified_native_classes(
     config = {
         "vision": {
             "rgb_model": {"name": "resnet18", "weights": weights},
-            "share_rgb_model": share_rgb_model, "crop_shape": crop_shape,
+            "share_rgb_model": share_rgb_model, "resize_shape": resize_shape, "crop_shape": crop_shape,
             "random_crop": random_crop, "use_recon": False, "use_vib": False,
         },
         "policy": {
@@ -66,6 +67,7 @@ def test_factory_uses_unmodified_native_classes(
     assert actor.args["shape_meta"] is meta
     assert actor.args["obs_encoder"].args["rgb_model"][1] == {"name": "resnet18", "weights": weights}
     assert actor.args["obs_encoder"].args["share_rgb_model"] is share_rgb_model
+    assert actor.args["obs_encoder"].args["resize_shape"] == resize_shape
     assert actor.args["obs_encoder"].args["crop_shape"] == crop_shape
     assert actor.args["obs_encoder"].args["random_crop"] is random_crop
     assert actor.args["use_aug"] is use_aug
