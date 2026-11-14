@@ -86,7 +86,8 @@ def _contract(cfg: dict[str, Any], dataset: Any, total_steps: int,
         "optimizer": copy.deepcopy(cfg["optimizer"]),
         "lr_scheduler": copy.deepcopy(cfg["lr_scheduler"]),
         "ema": copy.deepcopy(cfg["ema"]),
-        "batch_size": cfg["dataloader"]["batch_size"],
+        "dataloader": copy.deepcopy(cfg["dataloader"]),
+        "validation_seed": cfg["validation"]["seed"],
         "seed": cfg["training"]["seed"],
         "max_steps": cfg["training"]["max_steps"],
         "max_epochs": cfg["training"]["max_epochs"],
@@ -240,13 +241,22 @@ def _checkpoint_periodic(run_dir: Path, cfg: dict[str, Any], step: int,
         global_step=step, contract=contract,
         best_val_loss=best_loss, best_step=best_step,
     )
-    # Each configured save event is an explicit snapshot; last.ckpt stays resumable.
+    # Snapshot is a hard link to the one atomic serialization, when supported.
+    # Each archived snapshot stays independent when last.ckpt is replaced.
+    import os
+    import shutil
     snapshot = checkpoint_dir / f"step_{step:08d}.ckpt"
-    save_checkpoint(
-        snapshot, policy, optimizer, scheduler, ema,
-        global_step=step, contract=contract,
-        best_val_loss=best_loss, best_step=best_step,
-    )
+    if snapshot.exists():
+        raise FileExistsError(f"Refusing to overwrite existing step snapshot: {snapshot}")
+    try:
+        os.link(checkpoint_dir / "last.ckpt", snapshot)
+    except OSError:
+        temporary = snapshot.with_name(snapshot.name + ".tmp")
+        try:
+            shutil.copy2(checkpoint_dir / "last.ckpt", temporary)
+            temporary.replace(snapshot)
+        finally:
+            temporary.unlink(missing_ok=True)
     files = sorted(checkpoint_dir.glob("step_*.ckpt"))
     for old in files[:-cfg["checkpoint"]["keep_last"]]:
         old.unlink()
@@ -299,7 +309,8 @@ def _write_run_metadata(run_dir: Path, cfg: dict[str, Any],
     )
 
 
-def run(config: dict[str, Any], *, resume: str | Path | None = None) -> Path:
+def run(config: dict[str, Any], *, resume: str | Path | None = None,
+        stop_after: int | None = None) -> Path:
     """Native RL1002D.compute_loss, with reproducible step-addressable orchestration."""
     import sys
     import time
@@ -327,6 +338,10 @@ def run(config: dict[str, Any], *, resume: str | Path | None = None) -> Path:
                    if config["dataset"]["val_ratio"] > 0 else None)
     total_steps, steps_per_epoch = resolve_training_budget(config, len(train_dataset))
     contract = _contract(config, train_dataset, total_steps, steps_per_epoch)
+    if stop_after is not None and (type(stop_after) is not int or
+                                  not 1 <= stop_after <= total_steps):
+        raise ValueError("stop_after must be within the fixed training budget.")
+    target_step = stop_after if stop_after is not None else total_steps
     policy = build_rl100_dp(build_shape_meta(train_dataset.spec), {
         **config,
         "policy": {**config["policy"], "horizon": train_dataset.horizon,
@@ -357,7 +372,7 @@ def run(config: dict[str, Any], *, resume: str | Path | None = None) -> Path:
 
     sampler = StepBatchSampler(
         len(train_dataset), config["dataloader"]["batch_size"],
-        int(train_cfg["seed"]), start_step, total_steps,
+        int(train_cfg["seed"]), start_step, target_step,
     )
     train_loader = _loader(
         train_dataset, config["dataloader"], seed=int(train_cfg["seed"]),
@@ -387,7 +402,7 @@ def run(config: dict[str, Any], *, resume: str | Path | None = None) -> Path:
     try:
         policy.train()
         with tqdm(
-            total=total_steps - start_step, desc="RL100 IL", unit="step",
+            total=target_step - start_step, desc="RL100 IL", unit="step",
             dynamic_ncols=True,
             disable=not (config["logging"]["progress_bar"] and sys.stderr.isatty()),
         ) as progress:
@@ -461,7 +476,8 @@ def run(config: dict[str, Any], *, resume: str | Path | None = None) -> Path:
                     # The training loop always returns to its pre-validation mode.
                 save_due = (checkpoint_cfg["enabled"] and
                             (is_due(checkpoint_cfg, step, steps_per_epoch) or
-                             (step == total_steps and checkpoint_cfg["save_on_finish"])))
+                             (step == total_steps and checkpoint_cfg["save_on_finish"]) or
+                             (stop_after is not None and step == target_step)))
                 if save_due:
                     _checkpoint_periodic(
                         run_dir, config, step, policy, optimizer, scheduler, ema,
@@ -488,7 +504,6 @@ def main() -> None:
     if args.config is not None:
         config_path = args.config
     else:
-        from arbim.training.run_utils import resolve_run_directory
         # Read original configuration before any dataset/model setup.
         run_dir = Path(args.resume).expanduser().resolve()
         if run_dir.is_file():
