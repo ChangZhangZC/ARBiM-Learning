@@ -67,55 +67,90 @@ def _restore_rng(state: dict[str, Any]) -> None:
     name, keys, pos, has_gauss, cached = state["numpy"]
     np.random.set_state((name, keys.numpy().astype(np.uint32), pos, has_gauss, cached))
     torch.set_rng_state(state["torch"])
-    if torch.cuda.is_available() and state["cuda"]:
+    if state["cuda"]:
+        if not torch.cuda.is_available():
+            raise RuntimeError("Cannot restore CUDA RNG on a host without CUDA.")
         torch.cuda.set_rng_state_all(state["cuda"])
 
 
-def _contract(cfg: dict[str, Any], dataset: Any) -> dict[str, Any]:
-    keys = ("dataset", "policy", "vision", "schedulers", "optimizer", "lr_scheduler", "ema", "dataloader")
+
+def _contract(cfg: dict[str, Any], dataset: Any, total_steps: int,
+              steps_per_epoch: int) -> dict[str, Any]:
+    """Freeze every input that can change model updates or sampling order."""
     return {
-        "config": {key: copy.deepcopy(cfg[key]) for key in keys},
+        "dataset": copy.deepcopy(cfg["dataset"]),
         "dataset_spec": copy.deepcopy(dataset.spec),
         "train_episodes": tuple(dataset._train_episodes),
         "val_episodes": tuple(dataset._val_episodes),
-        "num_epochs": cfg["training"]["num_epochs"],
-        "max_train_batches": cfg["training"].get("max_train_batches"),
+        "policy": copy.deepcopy(cfg["policy"]),
+        "vision": copy.deepcopy(cfg["vision"]),
+        "schedulers": copy.deepcopy(cfg["schedulers"]),
+        "optimizer": copy.deepcopy(cfg["optimizer"]),
+        "lr_scheduler": copy.deepcopy(cfg["lr_scheduler"]),
+        "ema": copy.deepcopy(cfg["ema"]),
+        "dataloader": copy.deepcopy(cfg["dataloader"]),
+        "validation_seed": cfg["validation"]["seed"],
+        "seed": cfg["training"]["seed"],
+        "device": cfg["training"]["device"],
+        "max_steps": cfg["training"]["max_steps"],
+        "max_epochs": cfg["training"]["max_epochs"],
+        "steps_per_epoch": steps_per_epoch,
+        "total_steps": total_steps,
     }
 
 
 def save_checkpoint(
     path: str | Path, policy: torch.nn.Module, optimizer: torch.optim.Optimizer,
-    scheduler: Any, ema: Any, *, next_epoch: int, global_step: int,
-    contract: dict[str, Any],
+    scheduler: Any, ema: Any, *, global_step: int,
+    contract: dict[str, Any], best_val_loss: float | None,
+    best_step: int | None,
 ) -> None:
-    """Save an epoch-boundary ARBiM checkpoint with unmodified RL1002D keys."""
+    """Atomically persist the native model and every resumable training state."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    torch.save({
-        "format_version": 1,
-        "policy": policy.state_dict(),
-        "optimizer": optimizer.state_dict(),
-        "lr_scheduler": scheduler.state_dict(),
-        "ema_policy": ema.averaged_model.state_dict(),
-        "ema_optimization_step": ema.optimization_step,
-        "ema_decay": ema.decay,
-        "next_epoch": next_epoch,
-        "global_step": global_step,
-        "contract": contract,
-        "rng": _rng_state(),
-    }, path)
+    temporary = path.with_name(path.name + ".tmp")
+    try:
+        torch.save({
+            "format_version": 2,
+            "checkpoint_role": "training",
+            "policy": policy.state_dict(),
+            "optimizer": optimizer.state_dict(),
+            "lr_scheduler": scheduler.state_dict(),
+            "ema_policy": ema.averaged_model.state_dict(),
+            "ema_optimization_step": ema.optimization_step,
+            "ema_decay": ema.decay,
+            "global_step": global_step,
+            "completed_epochs": global_step // contract["steps_per_epoch"],
+            "batch_offset": global_step % contract["steps_per_epoch"],
+            "best_val_loss": best_val_loss,
+            "best_step": best_step,
+            "contract": contract,
+            "rng": _rng_state(),
+        }, temporary)
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def load_checkpoint(
     path: str | Path, policy: torch.nn.Module, optimizer: torch.optim.Optimizer,
     scheduler: Any, ema: Any, *, contract: dict[str, Any], device: torch.device,
-) -> tuple[int, int]:
-    """Strict epoch-boundary restore; never silently accept incompatible models."""
+) -> tuple[int, float | None, int | None]:
+    """Strictly restore training at a completed optimizer step."""
     from rl_100.common.pytorch_util import optimizer_to
 
     payload = torch.load(path, map_location="cpu", weights_only=True)
-    if payload.get("format_version") != 1 or payload.get("contract") != contract:
-        raise ValueError("Checkpoint version or data/model/training contract mismatch.")
+    if payload.get("format_version") != 2 or payload.get("checkpoint_role") != "training":
+        raise ValueError("Not a version-2 resumable training checkpoint.")
+    if payload.get("contract") != contract:
+        raise ValueError("Checkpoint contract mismatch: data, model or training schedule changed.")
+    step = payload["global_step"]
+    if type(step) is not int or not 0 <= step <= contract["total_steps"]:
+        raise ValueError("Invalid checkpoint global_step.")
+    if (payload["completed_epochs"], payload["batch_offset"]) != divmod(
+        step, contract["steps_per_epoch"]
+    ):
+        raise ValueError("Checkpoint sampler cursor mismatch.")
     policy.load_state_dict(payload["policy"], strict=True)
     ema.averaged_model.load_state_dict(payload["ema_policy"], strict=True)
     optimizer.load_state_dict(payload["optimizer"])
@@ -124,12 +159,12 @@ def load_checkpoint(
     ema.optimization_step = int(payload["ema_optimization_step"])
     ema.decay = float(payload["ema_decay"])
     _restore_rng(payload["rng"])
-    return int(payload["next_epoch"]), int(payload["global_step"])
+    return step, payload["best_val_loss"], payload["best_step"]
 
 
 @contextmanager
 def _validation_without_random_shifts(policy: Any):
-    """Native compute_loss checks use_aug even in eval mode; disable shifts only for validation."""
+    """Native compute_loss checks use_aug even in eval mode."""
     old_value = policy.use_aug
     policy.use_aug = False
     try:
@@ -138,109 +173,359 @@ def _validation_without_random_shifts(policy: Any):
         policy.use_aug = old_value
 
 
-def _loader(dataset: Any, config: dict[str, Any], shuffle: bool) -> DataLoader:
-    options = dict(config)
+def _loader(dataset: Any, cfg: dict[str, Any], *, seed: int,
+            batch_sampler: Any = None) -> DataLoader:
+    options = dict(cfg)
     if options.get("num_workers", 0) == 0:
         options.pop("prefetch_factor", None)
         options["persistent_workers"] = False
-    return DataLoader(dataset, shuffle=shuffle, **options)
+    generator = torch.Generator().manual_seed(seed)
+    if batch_sampler is not None:
+        options.pop("batch_size", None)
+        return DataLoader(dataset, batch_sampler=batch_sampler, generator=generator, **options)
+    return DataLoader(dataset, shuffle=False, generator=generator, **options)
 
 
-def run(config: dict[str, Any], *, resume: str | Path | None = None) -> None:
-    """Train with native RL1002D.compute_loss; no RL workspace or custom loss."""
+def _validate(policy: Any, loader: DataLoader, device: torch.device, seed: int) -> float:
+    """Full held-out validation with fixed diffusion noise and isolated RNG."""
+    rng = _rng_state()
+    was_training = policy.training
+    total_loss = 0.0
+    num_samples = 0
+    try:
+        _seed_everything(seed)
+        policy.eval()
+        with torch.no_grad(), _validation_without_random_shifts(policy):
+            for sample in loader:
+                ready = prepare_batch(sample, device)
+                loss, _ = policy.compute_loss(ready)
+                if not torch.isfinite(loss).all():
+                    raise FloatingPointError("Nonfinite validation loss.")
+                n = ready["action"].shape[0]
+                total_loss += float(loss.item()) * n
+                num_samples += n
+    finally:
+        policy.train(was_training)
+        _restore_rng(rng)
+    if num_samples == 0:
+        raise ValueError("Validation dataset produced no batches.")
+    return total_loss / num_samples
+
+
+def _save_best(path: Path, policy: Any, step: int, loss: float,
+               contract: dict[str, Any]) -> None:
+    """Inference-oriented model-only checkpoint; never used for Resume."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(path.name + ".tmp")
+    try:
+        torch.save({
+            "format_version": 2,
+            "checkpoint_role": "best_policy",
+            "policy": policy.state_dict(),
+            "global_step": step,
+            "val_loss": loss,
+            "contract": contract,
+            "selected_weights": "raw",
+        }, temporary)
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _checkpoint_periodic(run_dir: Path, cfg: dict[str, Any], step: int,
+                         policy: Any, optimizer: Any, scheduler: Any, ema: Any,
+                         contract: dict[str, Any], best_loss: float | None,
+                         best_step: int | None) -> None:
+    """Always update last; keep at most N archived step snapshots."""
+    checkpoint_dir = run_dir / "checkpoints"
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    save_checkpoint(
+        checkpoint_dir / "last.ckpt", policy, optimizer, scheduler, ema,
+        global_step=step, contract=contract,
+        best_val_loss=best_loss, best_step=best_step,
+    )
+    # Snapshot is a hard link to the one atomic serialization, when supported.
+    # Each archived snapshot stays independent when last.ckpt is replaced.
+    import os
+    import shutil
+    snapshot = checkpoint_dir / f"step_{step:08d}.ckpt"
+    if snapshot.exists():
+        raise FileExistsError(f"Refusing to overwrite existing step snapshot: {snapshot}")
+    try:
+        os.link(checkpoint_dir / "last.ckpt", snapshot)
+    except OSError:
+        temporary = snapshot.with_name(snapshot.name + ".tmp")
+        try:
+            shutil.copy2(checkpoint_dir / "last.ckpt", temporary)
+            temporary.replace(snapshot)
+        finally:
+            temporary.unlink(missing_ok=True)
+    files = sorted(checkpoint_dir.glob("step_*.ckpt"))
+    for old in files[:-cfg["checkpoint"]["keep_last"]]:
+        old.unlink()
+
+
+def _git_revision(directory: Path) -> str | None:
+    import subprocess
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(directory), "rev-parse", "HEAD"],
+            capture_output=True, text=True, check=True, timeout=5,
+        )
+        return result.stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+def _write_run_metadata(run_dir: Path, cfg: dict[str, Any],
+                        dataset: Any, contract: dict[str, Any]) -> None:
+    import json
+
+    root = Path(__file__).resolve().parents[3]
+    metadata = {
+        "git_revision": _git_revision(root),
+        "upstream_revisions": {
+            "rl100": _git_revision(root / "third_party" / "rl100"),
+            "lerobot": _git_revision(root / "third_party" / "lerobot"),
+        },
+        "dataset_spec": dataset.spec,
+        "train_episodes": list(dataset._train_episodes),
+        "val_episodes": list(dataset._val_episodes),
+        "preprocessor": {
+            "camera_key_mapping": dataset.spec["camera_obs_keys"],
+            "rgb_transport": "uint8 -> float32 [0,1] in prepare_batch",
+            "state_action_normalizer": "native RL1002D.LinearNormalizer (limits)",
+            "rgb_resize_crop_imagenet": "native RL100 MultiImageObsEncoder",
+        },
+        "postprocessor": {
+            "action_unnormalization": "native RL1002D.predict_action",
+            "robot_control_mapping": "environment adapter; not part of IL training",
+        },
+        "total_steps": contract["total_steps"],
+        "steps_per_epoch": contract["steps_per_epoch"],
+    }
+    (run_dir / "config_resolved.yaml").write_text(
+        yaml.safe_dump(cfg, sort_keys=False, allow_unicode=True), encoding="utf-8"
+    )
+    (run_dir / "run_meta.json").write_text(
+        json.dumps(metadata, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+
+
+def run(config: dict[str, Any], *, resume: str | Path | None = None,
+        stop_after: int | None = None) -> Path:
+    """Native RL1002D.compute_loss, with reproducible step-addressable orchestration."""
+    import sys
+    import time
+    from datetime import timedelta
+    from tqdm import tqdm
+
     from rl_100.model.common.lr_scheduler import get_scheduler
     from rl_100.model.diffusion.ema_model import EMAModel
     from arbim.data.lerobot_adapter import LeRobotDP2DDataset, build_shape_meta
+    from arbim.training.run_utils import (
+        StepBatchSampler, check_config, is_due, resolve_run_directory,
+        resolve_training_budget,
+    )
+    from arbim.training.telemetry import MetricLogger
 
+    check_config(config)
     train_cfg = config["training"]
-    _seed_everything(int(train_cfg["seed"]))
+    run_dir = resolve_run_directory(config, resume)
     device = torch.device(train_cfg["device"])
     if device.type == "cuda" and not torch.cuda.is_available():
         raise RuntimeError("CUDA requested but unavailable; refusing silent CPU fallback.")
+    _seed_everything(int(train_cfg["seed"]))
     train_dataset = LeRobotDP2DDataset(**config["dataset"], split="train")
-    val_dataset = train_dataset.get_validation_dataset() if config["dataset"]["val_ratio"] > 0 else None
-    train_loader = _loader(train_dataset, config["dataloader"], shuffle=True)
-    val_loader = _loader(val_dataset, config["dataloader"], shuffle=False) if val_dataset is not None else None
-    max_train = train_cfg.get("max_train_batches")
-    batches_per_epoch = min(len(train_loader), max_train) if max_train is not None else len(train_loader)
-    if batches_per_epoch < 1:
-        raise ValueError("Empty training epoch.")
-    epochs = int(train_cfg["num_epochs"])
-    if epochs < 1:
-        raise ValueError("num_epochs must be positive.")
-    if config["policy"]["n_action_steps"] != train_dataset.prediction_horizon:
-        raise ValueError("n_action_steps must match horizon-n_obs_steps+1 for V1.")
-
+    val_dataset = (train_dataset.get_validation_dataset()
+                   if config["dataset"]["val_ratio"] > 0 else None)
+    total_steps, steps_per_epoch = resolve_training_budget(config, len(train_dataset))
+    if config["lr_scheduler"]["warmup_steps"] >= total_steps:
+        print("[IL WARNING] Effective budget ends during LR warmup; "
+              "check max_steps/max_epochs and lr_scheduler.warmup_steps.", flush=True)
+    contract = _contract(config, train_dataset, total_steps, steps_per_epoch)
+    if stop_after is not None and (type(stop_after) is not int or
+                                  not 1 <= stop_after <= total_steps):
+        raise ValueError("stop_after must be within the fixed training budget.")
+    target_step = stop_after if stop_after is not None else total_steps
     policy = build_rl100_dp(build_shape_meta(train_dataset.spec), {
-        **config, "policy": {**config["policy"], "horizon": train_dataset.horizon,
-                             "n_obs_steps": train_dataset.n_obs_steps},
+        **config,
+        "policy": {**config["policy"], "horizon": train_dataset.horizon,
+                   "n_obs_steps": train_dataset.n_obs_steps},
     })
+    # Register native normalizer parameters before creating optimizer and EMA.
     policy.set_normalizer(train_dataset.get_normalizer(mode="limits"))
     policy.to(device)
-    ema_policy = copy.deepcopy(policy)
-    ema = EMAModel(model=ema_policy, **config["ema"])
+    ema = EMAModel(model=copy.deepcopy(policy), **config["ema"])
     ema.averaged_model.to(device)
     optimizer = torch.optim.AdamW(policy.parameters(), **config["optimizer"])
-    lr_cfg = config["lr_scheduler"]
     scheduler = get_scheduler(
-        lr_cfg["name"], optimizer=optimizer,
-        num_warmup_steps=lr_cfg["warmup_steps"],
-        num_training_steps=epochs * batches_per_epoch,
+        config["lr_scheduler"]["name"], optimizer=optimizer,
+        num_warmup_steps=config["lr_scheduler"]["warmup_steps"],
+        num_training_steps=total_steps,
     )
-    contract = _contract(config, train_dataset)
-    start_epoch, global_step = 0, 0
+    start_step, best_val_loss, best_step = 0, None, None
     if resume is not None:
-        start_epoch, global_step = load_checkpoint(
-            resume, policy, optimizer, scheduler, ema, contract=contract, device=device)
-    output_dir = Path(train_cfg["output_dir"])
-    for epoch in range(start_epoch, epochs):
+        start_step, best_val_loss, best_step = load_checkpoint(
+            run_dir / "checkpoints" / "last.ckpt",
+            policy, optimizer, scheduler, ema, contract=contract, device=device,
+        )
+        if best_step is not None and not (run_dir / "checkpoints" / "best.ckpt").is_file():
+            raise FileNotFoundError("Resume checkpoint refers to a missing best.ckpt")
+    else:
+        run_dir.mkdir(parents=True, exist_ok=False)
+        _write_run_metadata(run_dir, config, train_dataset, contract)
+
+    sampler = StepBatchSampler(
+        len(train_dataset), config["dataloader"]["batch_size"],
+        int(train_cfg["seed"]), start_step, target_step,
+    )
+    train_loader = _loader(
+        train_dataset, config["dataloader"], seed=int(train_cfg["seed"]),
+        batch_sampler=sampler,
+    )
+    val_loader = (_loader(
+        val_dataset, config["dataloader"],
+        seed=int(config["validation"]["seed"]),
+    ) if val_dataset is not None else None)
+    # Do not let telemetry imports/initialization change training noise.
+    rng = _rng_state()
+    try:
+        logger = MetricLogger(config, run_dir, resumed=resume is not None,
+                              resume_step=start_step)
+    finally:
+        _restore_rng(rng)
+
+    print(f"[IL] run={run_dir}", flush=True)
+    print(f"[IL] train_windows={len(train_dataset)} steps_per_epoch={steps_per_epoch} "
+          f"budget={total_steps} resume_step={start_step}", flush=True)
+    checkpoint_cfg = config["checkpoint"]
+    validation_cfg = config["validation"]
+    log_freq = config["logging"]["log_freq_steps"]
+    run_start = time.perf_counter()
+    recent_loss, recent_count = 0.0, 0
+    previous_step_end = run_start
+    try:
         policy.train()
-        train_losses = []
-        for index, batch in enumerate(train_loader):
-            if index >= batches_per_epoch:
-                break
-            batch = prepare_batch(batch, device)
-            optimizer.zero_grad(set_to_none=True)
-            loss, _ = policy.compute_loss(batch)
-            if not torch.isfinite(loss).all():
-                raise FloatingPointError(f"Nonfinite training loss at epoch={epoch}, batch={index}.")
-            loss.backward()
-            optimizer.step()
-            scheduler.step()
-            ema.step(policy)
-            global_step += 1
-            train_losses.append(loss.item())
-        metrics = {"epoch": epoch + 1, "global_step": global_step, "train_loss": float(np.mean(train_losses))}
-        validate_every = int(train_cfg["validate_every"])
-        if val_loader is not None and validate_every > 0 and (epoch + 1) % validate_every == 0:
-            policy.eval()
-            val_losses = []
-            max_val = train_cfg.get("max_val_batches")
-            with torch.no_grad(), _validation_without_random_shifts(policy):
-                for index, batch in enumerate(val_loader):
-                    if max_val is not None and index >= max_val:
-                        break
-                    loss, _ = policy.compute_loss(prepare_batch(batch, device))
-                    if not torch.isfinite(loss).all():
-                        raise FloatingPointError("Nonfinite validation loss.")
-                    val_losses.append(loss.item())
-            if val_losses:
-                metrics["val_loss"] = float(np.mean(val_losses))
-        print(metrics, flush=True)
-        checkpoint_every = int(train_cfg["checkpoint_every"])
-        if checkpoint_every > 0 and (epoch + 1) % checkpoint_every == 0:
-            save_checkpoint(
-                output_dir / "latest.ckpt", policy, optimizer, scheduler, ema,
-                next_epoch=epoch + 1, global_step=global_step, contract=contract,
-            )
+        with tqdm(
+            total=target_step - start_step, desc="RL100 IL", unit="step",
+            dynamic_ncols=True,
+            disable=not (config["logging"]["progress_bar"] and sys.stderr.isatty()),
+        ) as progress:
+            for step, sample in enumerate(train_loader, start=start_step + 1):
+                read_time = time.perf_counter() - previous_step_end
+                ready = prepare_batch(sample, device)
+                update_start = time.perf_counter()
+                optimizer.zero_grad(set_to_none=True)
+                loss, _ = policy.compute_loss(ready)
+                if not torch.isfinite(loss).all():
+                    raise FloatingPointError(f"Nonfinite train loss at step {step}.")
+                loss.backward()
+                optimizer.step()
+                scheduler.step()
+                ema.step(policy)
+                update_time = time.perf_counter() - update_start
+                progress.update(1)
+                recent_loss += float(loss.item())
+                recent_count += 1
+                epoch, offset = divmod(step, steps_per_epoch)
+                epoch_fraction = step / steps_per_epoch
+                if step % log_freq == 0 or step == total_steps:
+                    elapsed = time.perf_counter() - run_start
+                    step_speed = (step - start_step) / elapsed if elapsed > 0 else 0
+                    eta = (total_steps - step) / step_speed if step_speed > 0 else 0
+                    metrics = {
+                        "loss": recent_loss / recent_count,
+                        "lr": float(optimizer.param_groups[0]["lr"]),
+                        "epoch_equivalent": epoch_fraction,
+                        "completed_epochs": epoch,
+                        "epoch_batch_offset": offset,
+                        "elapsed_s": elapsed,
+                        "eta_s": eta,
+                        "steps_per_s": step_speed,
+                        "data_s": read_time,
+                        "update_s": update_time,
+                    }
+                    logger_rng = _rng_state()
+                    try:
+                        logger.log("train", step, **metrics)
+                    finally:
+                        _restore_rng(logger_rng)
+                    progress.set_postfix(
+                        loss=f"{metrics['loss']:.4f}",
+                        lr=f"{metrics['lr']:.1e}", epoch=f"{epoch_fraction:.2f}",
+                    )
+                    tqdm.write(
+                        f"[TRAIN] step={step}/{total_steps} epoch={epoch_fraction:.2f} "
+                        f"loss={metrics['loss']:.6f} lr={metrics['lr']:.2e} "
+                        f"speed={step_speed:.2f}step/s "
+                        f"ETA={timedelta(seconds=int(eta))}"
+                    )
+                    recent_loss, recent_count = 0.0, 0
+
+                val_due = (
+                    val_loader is not None and
+                    (is_due(validation_cfg, step, steps_per_epoch) or
+                     (step == total_steps and validation_cfg.get("on_finish", True)))
+                )
+                if val_due:
+                    val_start = time.perf_counter()
+                    val_loss = _validate(
+                        policy, val_loader, device, int(validation_cfg["seed"])
+                    )
+                    logger_rng = _rng_state()
+                    try:
+                        logger.log("val", step, loss=val_loss,
+                                   elapsed_s=time.perf_counter() - val_start)
+                    finally:
+                        _restore_rng(logger_rng)
+                    tqdm.write(f"[VAL] step={step} loss={val_loss:.6f}")
+                    if best_val_loss is None or val_loss < best_val_loss:
+                        best_val_loss, best_step = val_loss, step
+                        if checkpoint_cfg["enabled"]:
+                            _save_best(
+                                run_dir / "checkpoints" / "best.ckpt",
+                                policy, step, val_loss, contract,
+                            )
+                    # The training loop always returns to its pre-validation mode.
+                save_due = (checkpoint_cfg["enabled"] and
+                            (is_due(checkpoint_cfg, step, steps_per_epoch) or
+                             (step == total_steps and checkpoint_cfg["save_on_finish"]) or
+                             (stop_after is not None and step == target_step)))
+                if save_due:
+                    _checkpoint_periodic(
+                        run_dir, config, step, policy, optimizer, scheduler, ema,
+                        contract, best_val_loss, best_step,
+                    )
+                    tqdm.write(f"[SAVE] step={step} -> checkpoints/last.ckpt")
+                previous_step_end = time.perf_counter()
+        if start_step >= total_steps:
+            print(f"[IL] Training already finished at step={start_step}.", flush=True)
+    finally:
+        logger.close()
+    return run_dir
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Native RL100 DP-2D IL training")
-    parser.add_argument("--config", type=Path, required=True)
-    parser.add_argument("--resume", type=Path)
+    parser = argparse.ArgumentParser(description="Native RL-100 DP-2D IL training")
+    parser.add_argument("--config", type=Path,
+                        help="YAML profile for a new run; optional on Resume.")
+    parser.add_argument("--resume", type=Path,
+                        help="Existing run directory (loads checkpoints/last.ckpt).")
     args = parser.parse_args()
-    with args.config.open(encoding="utf-8") as file:
+    if args.config is None and args.resume is None:
+        parser.error("Either --config or --resume is required.")
+    if args.config is not None:
+        config_path = args.config
+    else:
+        # Read original configuration before any dataset/model setup.
+        run_dir = Path(args.resume).expanduser().resolve()
+        if run_dir.is_file():
+            if run_dir.name != "last.ckpt" or run_dir.parent.name != "checkpoints":
+                parser.error("--resume file must be checkpoints/last.ckpt")
+            run_dir = run_dir.parent.parent
+        config_path = run_dir / "config_resolved.yaml"
+    with config_path.open(encoding="utf-8") as file:
         config = yaml.safe_load(file)
     run(config, resume=args.resume)
 
