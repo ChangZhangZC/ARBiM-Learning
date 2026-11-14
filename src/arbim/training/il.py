@@ -132,13 +132,8 @@ def save_checkpoint(
         temporary.unlink(missing_ok=True)
 
 
-def load_checkpoint(
-    path: str | Path, policy: torch.nn.Module, optimizer: torch.optim.Optimizer,
-    scheduler: Any, ema: Any, *, contract: dict[str, Any], device: torch.device,
-) -> tuple[int, float | None, int | None]:
-    """Strictly restore training at a completed optimizer step."""
-    from rl_100.common.pytorch_util import optimizer_to
-
+def read_checkpoint(path: str | Path, *, contract: dict[str, Any]) -> dict[str, Any]:
+    """Validate a saved step checkpoint before creating optimizer/EMA state."""
     payload = torch.load(path, map_location="cpu", weights_only=True)
     if payload.get("format_version") != 2 or payload.get("checkpoint_role") != "training":
         raise ValueError("Not a version-2 resumable training checkpoint.")
@@ -151,15 +146,43 @@ def load_checkpoint(
         step, contract["steps_per_epoch"]
     ):
         raise ValueError("Checkpoint sampler cursor mismatch.")
-    policy.load_state_dict(payload["policy"], strict=True)
+    return payload
+
+
+def load_checkpoint(
+    payload: dict[str, Any], policy: torch.nn.Module,
+    optimizer: torch.optim.Optimizer, scheduler: Any, ema: Any,
+    *, device: torch.device,
+) -> tuple[int, float | None, int | None]:
+    """Restore training state after policy.load_state_dict() and policy.to(device).
+
+    RL-100 DictOfTensorMixin replaces Normalizer ParameterDict entries during
+    load_state_dict(), initially with CPU tensors. The policy MUST therefore be
+    loaded on CPU and moved to the target device before building its optimizer.
+    """
+    from rl_100.common.pytorch_util import optimizer_to
+
+    policy_params = tuple(policy.parameters())
+    optimizer_params = tuple(p for group in optimizer.param_groups for p in group["params"])
+    if (len(policy_params) != len(optimizer_params) or
+        {id(p) for p in policy_params} != {id(p) for p in optimizer_params}):
+        raise ValueError("Optimizer references stale Policy parameters after checkpoint load.")
+    if any(p.device != device for p in policy_params):
+        raise ValueError("Resumed Policy parameters are not all on the requested device.")
+
+    # EMA is independent of the optimizer, but its native Normalizer is also
+    # recreated on CPU during strict load and must be moved afterward.
     ema.averaged_model.load_state_dict(payload["ema_policy"], strict=True)
+    ema.averaged_model.to(device)
+    if any(p.device != device for p in ema.averaged_model.parameters()):
+        raise ValueError("Resumed EMA parameters are not all on the requested device.")
     optimizer.load_state_dict(payload["optimizer"])
     optimizer_to(optimizer, device)
     scheduler.load_state_dict(payload["lr_scheduler"])
     ema.optimization_step = int(payload["ema_optimization_step"])
     ema.decay = float(payload["ema_decay"])
     _restore_rng(payload["rng"])
-    return step, payload["best_val_loss"], payload["best_step"]
+    return int(payload["global_step"]), payload["best_val_loss"], payload["best_step"]
 
 
 @contextmanager
@@ -353,8 +376,14 @@ def run(config: dict[str, Any], *, resume: str | Path | None = None,
         "policy": {**config["policy"], "horizon": train_dataset.horizon,
                    "n_obs_steps": train_dataset.n_obs_steps},
     })
-    # Register native normalizer parameters before creating optimizer and EMA.
-    policy.set_normalizer(train_dataset.get_normalizer(mode="limits"))
+    # Native DictOfTensorMixin reconstructs Normalizer ParameterDict on CPU
+    # during strict state loading; load BEFORE .to(device) and optimizer build.
+    saved = (read_checkpoint(run_dir / "checkpoints" / "last.ckpt", contract=contract)
+             if resume is not None else None)
+    if saved is not None:
+        policy.load_state_dict(saved["policy"], strict=True)
+    else:
+        policy.set_normalizer(train_dataset.get_normalizer(mode="limits"))
     policy.to(device)
     ema = EMAModel(model=copy.deepcopy(policy), **config["ema"])
     ema.averaged_model.to(device)
@@ -365,10 +394,9 @@ def run(config: dict[str, Any], *, resume: str | Path | None = None,
         num_training_steps=total_steps,
     )
     start_step, best_val_loss, best_step = 0, None, None
-    if resume is not None:
+    if saved is not None:
         start_step, best_val_loss, best_step = load_checkpoint(
-            run_dir / "checkpoints" / "last.ckpt",
-            policy, optimizer, scheduler, ema, contract=contract, device=device,
+            saved, policy, optimizer, scheduler, ema, device=device,
         )
         if best_step is not None and not (run_dir / "checkpoints" / "best.ckpt").is_file():
             raise FileNotFoundError("Resume checkpoint refers to a missing best.ckpt")
