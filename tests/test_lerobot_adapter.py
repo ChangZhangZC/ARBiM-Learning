@@ -173,6 +173,9 @@ def test_metadata_shape_and_native_dict_apply(adapter):
     assert spec["camera_layouts"] == {
         "observation.images.head": "HWC", "observation.images.wrist": "CHW"
     }
+    assert spec["camera_obs_keys"] == {
+        "observation.images.head": "rgb_0", "observation.images.wrist": "rgb_1"
+    }
     meta = adapter.build_shape_meta(spec)
     assert all(isinstance(x, UserDict) for x in meta["obs"].values())
 
@@ -183,7 +186,10 @@ def test_metadata_shape_and_native_dict_apply(adapter):
         }
 
     assert dict_apply(meta["obs"], lambda x: x["shape"])["agent_pos"] == [2]
-    assert meta["obs"]["observation.images.wrist"]["shape"] == [3, 8, 9]
+    assert meta["obs"]["rgb_1"]["shape"] == [3, 8, 9]
+    assert tuple(meta["obs"]) == ("agent_pos", "rgb_0", "rgb_1")
+    # This used to fail for dotted LeRobot names in native MultiImageObsEncoder.
+    torch.nn.ModuleDict({key: torch.nn.Identity() for key in meta["obs"]})
 
 
 def test_temporal_windows_uint8_and_padding(adapter):
@@ -192,9 +198,10 @@ def test_temporal_windows_uint8_and_padding(adapter):
     frame = ds[0]
     assert frame["obs"]["agent_pos"].shape == (2, 2)
     assert frame["action"].shape == (5, 4)
-    assert frame["obs"]["observation.images.head"].shape == (2, 3, 8, 9)
-    assert frame["obs"]["observation.images.head"].dtype == torch.uint8
-    assert frame["obs"]["observation.images.wrist"].dtype == torch.float32
+    assert frame["obs"]["rgb_0"].shape == (2, 3, 8, 9)
+    assert frame["obs"]["rgb_0"].dtype == torch.uint8
+    assert frame["obs"]["rgb_1"].dtype == torch.float32
+    assert "observation.images.head" not in frame["obs"]
     assert not frame["action_is_pad"][1:].any()
     assert frame["action"][1, 0] == 0
     assert frame["obs"]["agent_pos"][-1, 0] == 0
@@ -204,6 +211,8 @@ def test_temporal_windows_uint8_and_padding(adapter):
     batch = next(iter(DataLoader(ds, batch_size=2)))
     assert batch["action"].shape == (2, 5, 4)
     assert batch["action_is_pad"].shape == (2, 5)
+    assert batch["obs"]["rgb_0"].shape == (2, 2, 3, 8, 9)
+    assert set(batch["obs"]) == set(adapter.build_shape_meta(ds.spec)["obs"])
 
 
 def test_split_and_train_only_normalizer(adapter):
@@ -211,6 +220,7 @@ def test_split_and_train_only_normalizer(adapter):
     val = ds.get_validation_dataset()
     assert set(ds._train_episodes).isdisjoint(val._val_episodes)
     assert val._val_episodes == ds._val_episodes
+    assert val.spec["camera_obs_keys"] == ds.spec["camera_obs_keys"]
     assert len(ds) and len(val)
     normalizer = ds.get_normalizer()
     assert normalizer.mode == "limits"
