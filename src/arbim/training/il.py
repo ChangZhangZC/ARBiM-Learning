@@ -67,7 +67,9 @@ def _restore_rng(state: dict[str, Any]) -> None:
     name, keys, pos, has_gauss, cached = state["numpy"]
     np.random.set_state((name, keys.numpy().astype(np.uint32), pos, has_gauss, cached))
     torch.set_rng_state(state["torch"])
-    if torch.cuda.is_available() and state["cuda"]:
+    if state["cuda"]:
+        if not torch.cuda.is_available():
+            raise RuntimeError("Cannot restore CUDA RNG on a host without CUDA.")
         torch.cuda.set_rng_state_all(state["cuda"])
 
 
@@ -89,6 +91,7 @@ def _contract(cfg: dict[str, Any], dataset: Any, total_steps: int,
         "dataloader": copy.deepcopy(cfg["dataloader"]),
         "validation_seed": cfg["validation"]["seed"],
         "seed": cfg["training"]["seed"],
+        "device": cfg["training"]["device"],
         "max_steps": cfg["training"]["max_steps"],
         "max_epochs": cfg["training"]["max_epochs"],
         "steps_per_epoch": steps_per_epoch,
@@ -440,7 +443,11 @@ def run(config: dict[str, Any], *, resume: str | Path | None = None,
                         "data_s": read_time,
                         "update_s": update_time,
                     }
+                    logger_rng = _rng_state()
+                try:
                     logger.log("train", step, **metrics)
+                finally:
+                    _restore_rng(logger_rng)
                     progress.set_postfix(
                         loss=f"{metrics['loss']:.4f}",
                         lr=f"{metrics['lr']:.1e}", epoch=f"{epoch_fraction:.2f}",
@@ -463,8 +470,12 @@ def run(config: dict[str, Any], *, resume: str | Path | None = None,
                     val_loss = _validate(
                         policy, val_loader, device, int(validation_cfg["seed"])
                     )
-                    logger.log("val", step, loss=val_loss,
-                               elapsed_s=time.perf_counter() - val_start)
+                    logger_rng = _rng_state()
+                    try:
+                        logger.log("val", step, loss=val_loss,
+                                   elapsed_s=time.perf_counter() - val_start)
+                    finally:
+                        _restore_rng(logger_rng)
                     tqdm.write(f"[VAL] step={step} loss={val_loss:.6f}")
                     if best_val_loss is None or val_loss < best_val_loss:
                         best_val_loss, best_step = val_loss, step
