@@ -58,10 +58,11 @@ def test_steps_and_epochs_whichever_first():
 
 
 def test_resume_sampler_rebuilds_exact_next_batch_and_epoch_boundaries():
-    batches = list(StepBatchSampler(13, 5, 12, 0, 8))
-    assert len(batches) == 8
-    assert batches[3:8] == list(StepBatchSampler(13, 5, 12, 3, 8))
-    assert [len(b) for b in batches] == [5, 5, 3, 5, 5, 3, 5, 5]
+    batches = list(StepBatchSampler(13, 5, 12, 0, 9))
+    assert len(batches) == 9
+    assert batches[3:9] == list(StepBatchSampler(13, 5, 12, 3, 9))
+    assert batches[4:9] == list(StepBatchSampler(13, 5, 12, 4, 9))
+    assert [len(b) for b in batches] == [5, 5, 3, 5, 5, 3, 5, 5, 3]
     for offset in (0, 3, 6):
         assert sorted(sum(batches[offset:offset + 3], [])) == list(range(13))
 
