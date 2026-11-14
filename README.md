@@ -13,7 +13,7 @@ Current scope: the native RL-100 DP-2D **IL training path** runs on LeRobot v3 d
 - `src/arbim/training/`: native IL training, resume, checkpoint and telemetry.
 - `src/arbim/runtime.py`: inference interface (planned).
 - `src/arbim/integrations/`: external environment adapters (planned; DuoBench is deferred).
-- `configs/il/`, `scripts/`, `tests/`: IL experiment profiles and tests.
+- `configs/il/` and `tests/`: RL100 DP-2D IL profiles and regression tests.
 - `outputs/`: ignored local training artifacts.
 
 
