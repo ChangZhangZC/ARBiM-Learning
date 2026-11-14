@@ -192,6 +192,21 @@ def test_metadata_shape_and_native_dict_apply(adapter):
     torch.nn.ModuleDict({key: torch.nn.Identity() for key in meta["obs"]})
 
 
+
+def test_camera_aliases_follow_explicit_selection_order(adapter):
+    from lerobot.datasets import LeRobotDatasetMetadata
+
+    metadata = LeRobotDatasetMetadata("test")
+    cameras = ["observation.images.wrist", "observation.images.head"]
+    spec = adapter.infer_dataset_spec(metadata, camera_keys=cameras)
+    assert spec["camera_keys"] == tuple(cameras)
+    assert spec["camera_obs_keys"] == {
+        "observation.images.wrist": "rgb_0",
+        "observation.images.head": "rgb_1",
+    }
+    assert tuple(adapter.build_shape_meta(spec)["obs"]) == ("agent_pos", "rgb_0", "rgb_1")
+
+
 def test_temporal_windows_uint8_and_padding(adapter):
     ds = adapter.LeRobotDP2DDataset("test", horizon=5, n_obs_steps=2, val_ratio=0)
     assert len(ds) == 27 - 3 * 3
