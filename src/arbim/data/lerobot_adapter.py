@@ -117,7 +117,11 @@ def infer_dataset_spec(
         "state_names": _feature_names(features[state_key], "state", state_dim),
         "action_names": _feature_names(features[action_key], "action", action_dim),
         "camera_keys": tuple(selected), "camera_shapes": shapes,
-        "camera_layouts": layouts, "fps": fps,
+        "camera_layouts": layouts,
+        # Keep LeRobot column names untouched; native RL100 encoder registers
+        # RGB branches in ModuleDict, which forbids periods in module keys.
+        "camera_obs_keys": {key: f"rgb_{i}" for i, key in enumerate(selected)},
+        "fps": fps,
     }
 
 
@@ -129,7 +133,9 @@ def build_shape_meta(spec: Mapping[str, Any]) -> dict[str, Any]:
     """
     obs = {"agent_pos": UserDict({"shape": [spec["state_dim"]], "type": "low_dim"})}
     for key in spec["camera_keys"]:
-        obs[key] = UserDict({"shape": list(spec["camera_shapes"][key]), "type": "rgb"})
+        obs[spec["camera_obs_keys"][key]] = UserDict({
+            "shape": list(spec["camera_shapes"][key]), "type": "rgb"
+        })
     return {"obs": obs, "action": {"shape": [spec["action_dim"]]}}
 
 
@@ -286,7 +292,9 @@ class LeRobotDP2DDataset(BaseDataset):
             )
         }
         for key in spec["camera_keys"]:
-            obs[key] = _rgb_window(raw[key], key, self.n_obs_steps, spec["camera_shapes"][key])
+            obs[spec["camera_obs_keys"][key]] = _rgb_window(
+                raw[key], key, self.n_obs_steps, spec["camera_shapes"][key]
+            )
         action = _flat_window(
             raw[spec["action_key"]], spec["action_key"], self.horizon, spec["action_shape"]
         )

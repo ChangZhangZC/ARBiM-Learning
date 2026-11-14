@@ -2,19 +2,40 @@
 
 Minimal, environment-independent learning integration for **ARBiM** (Asymmetric Reinforcement for Bimanual Manipulation).
 
-Current scope: establish the repository structure and preserve upstream sources. **IL, RL, runtime, and DuoBench integration have not yet been implemented.**
+Current scope: the native RL-100 DP-2D **IL training path** runs on LeRobot v3 data. Dataset adaption, native GPU single-batch smoke, and train-loop orchestration are in Feature-stage validation. RL post-training, simulation rollout and robot deployment are **not** implemented here.
 
 ## Repository layout
 
 - `third_party/rl100/`: upstream RL-100 as a pinned Git submodule.
 - `third_party/lerobot/`: upstream LeRobot as a pinned Git submodule.
-- `src/arbim/policy/`: model loading/construction adapter (planned).
-- `src/arbim/data/`: LeRobot-to-RL-100 batch adapter (planned).
-- `src/arbim/training/`: IL training entry (planned).
+- `src/arbim/policy/`: native RL1002D construction and weight-loading adapter.
+- `src/arbim/data/`: LeRobot v3-to-RL1002D data contract and camera alias mapping.
+- `src/arbim/training/`: native IL training, resume, checkpoint and telemetry.
 - `src/arbim/runtime.py`: inference interface (planned).
 - `src/arbim/integrations/`: external environment adapters (planned; DuoBench is deferred).
-- `configs/il/`, `scripts/`, `tests/`: experiments, CLI entry points, and tests (planned).
+- `configs/il/` and `tests/`: RL100 DP-2D IL profiles and regression tests.
 - `outputs/`: ignored local training artifacts.
+
+
+## Native RL-100 DP-2D IL
+
+See [IL training, exact-step Resume and experiment output guide](docs/rl100_dp2d_training.md).
+The reusable `configs/il/rl100_dp2d.yaml` profile exposes independent Steps/Epochs
+limits, step/epoch checkpoint/validation cadence, strict Resume, TensorBoard
+and optional W&B. Update its LeRobot dataset path and `training.task` for a
+new dataset; `policy.horizon/n_obs_steps/n_action_steps` are the native timing
+settings and `training.batch_size` is the DataLoader batch size.
+
+```bash
+python -m arbim.training.train_rl100_dp2d --config configs/il/rl100_dp2d.yaml
+# Resume the exact same training run:
+python -m arbim.training.train_rl100_dp2d --resume outputs/il/<task>/<method>/<run>
+```
+
+RL-100's model, normalizer, `compute_loss()` and diffusion stack are left
+unmodified. A full native GPU train + resume regression is required before Dev
+integration.
+
 
 ## Pinned upstream versions
 
