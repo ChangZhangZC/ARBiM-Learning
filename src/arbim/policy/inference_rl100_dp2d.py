@@ -43,8 +43,13 @@ def _validate_spec(spec: Mapping[str, Any]) -> None:
     missing = [key for key in required if key not in spec]
     if missing:
         raise ValueError(f"Checkpoint dataset_spec missing fields: {missing}")
-    if spec["state_dim"] < 1 or spec["action_dim"] < 1:
+    from math import prod
+    if any(type(spec[key]) is not int or spec[key] < 1 for key in ("state_dim", "action_dim")):
         raise ValueError("Invalid state/action dimensions in checkpoint.")
+    for key, dim in (("state_shape", spec["state_dim"]), ("action_shape", spec["action_dim"])):
+        shape = spec[key]
+        if not shape or prod(shape) != dim:
+            raise ValueError(f"Checkpoint {key} does not match its flattened dimension.")
     cameras = tuple(spec["camera_keys"])
     aliases = spec["camera_obs_keys"]
     if not cameras or len(cameras) != len(set(cameras)):
@@ -53,6 +58,10 @@ def _validate_spec(spec: Mapping[str, Any]) -> None:
         raise ValueError("Checkpoint camera alias mapping is incomplete or ambiguous.")
     if "agent_pos" in aliases.values():
         raise ValueError("Camera aliases cannot overwrite agent_pos.")
+    for key in cameras:
+        shape = spec["camera_shapes"].get(key)
+        if shape is None or len(shape) != 3 or shape[0] != 3 or any(d < 1 for d in shape):
+            raise ValueError(f"Invalid RGB camera shape for {key!r}.")
 
 
 def _check_normalizer(policy: torch.nn.Module, spec: Mapping[str, Any], device: torch.device) -> None:
@@ -151,8 +160,10 @@ def prepare_observation(
 
     def batch_windows(value: Any, key: str, shape: tuple[int, ...], rgb: bool) -> torch.Tensor:
         tensor = torch.as_tensor(value)
-        if tensor.ndim != len(shape) + 2 or tensor.shape[0] < 1 or tensor.shape[1] != n_obs_steps:
+        if tensor.ndim < 3 or tensor.shape[0] < 1 or tensor.shape[1] != n_obs_steps:
             raise ValueError(f"{key!r} must be batched [B,{n_obs_steps},...], got {tuple(tensor.shape)}.")
+        if not rgb and tuple(tensor.shape[2:]) == (spec["state_dim"],):
+            shape = (spec["state_dim"],)  # Already flattened native agent_pos.
         convert = _rgb_window if rgb else _flat_window
         return torch.stack([convert(frame, key, n_obs_steps, shape) for frame in tensor])
 
