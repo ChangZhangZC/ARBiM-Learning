@@ -216,26 +216,73 @@ def predict(
     return dict(result)
 
 
+
+def _read_inference_config(path: str | Path) -> dict[str, Any]:
+    """Read only runtime settings; model structure always comes from checkpoint."""
+    import yaml
+
+    with Path(path).expanduser().open(encoding="utf-8") as stream:
+        document = yaml.safe_load(stream)
+    if not isinstance(document, dict) or not isinstance(document.get("inference"), dict):
+        raise ValueError("Inference YAML must contain an 'inference' mapping.")
+    if set(document) != {"inference"}:
+        raise ValueError("Task 4 YAML only supports the top-level 'inference' mapping.")
+    settings = document["inference"]
+    allowed = {"checkpoint_path", "device", "weights", "deterministic", "samples", "dataset_root"}
+    unexpected = set(settings) - allowed
+    if unexpected:
+        raise ValueError(f"Unsupported Task 4 inference settings: {sorted(unexpected)}")
+    for key in ("checkpoint_path", "device", "dataset_root"):
+        value = settings.get(key)
+        if value is not None and (not isinstance(value, str) or not value.strip()):
+            raise ValueError(f"inference.{key} must be a nonempty string or null.")
+    if settings.get("weights", "raw") not in ("raw", "ema"):
+        raise ValueError("inference.weights must be 'raw' or 'ema'.")
+    if type(settings.get("deterministic", True)) is not bool:
+        raise ValueError("inference.deterministic must be boolean.")
+    if type(settings.get("samples", 1)) is not int or settings.get("samples", 1) < 1:
+        raise ValueError("inference.samples must be a positive integer.")
+    return settings
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Native RL100 DP-2D checkpoint GPU/CPU inference smoke test")
-    parser.add_argument("--checkpoint", type=Path, required=True, help="Task 3 best.ckpt or last.ckpt")
-    parser.add_argument("--device", default="cuda:0")
-    parser.add_argument("--weights", choices=("raw", "ema"), default="raw")
-    parser.add_argument("--stochastic", action="store_true", help="Use native stochastic DDIM (default: deterministic)")
-    parser.add_argument("--dataset-root", type=Path, help="Optional relocated LeRobot dataset root")
-    parser.add_argument("--samples", type=int, default=1, help="Number of held-out validation windows")
+    parser.add_argument("--config", type=Path, help="Optional configs/inference/rl100_dp2d.yaml")
+    parser.add_argument("--checkpoint", type=Path, help="Override inference.checkpoint_path")
+    parser.add_argument("--device", help="Override inference.device (default: cuda:0)")
+    parser.add_argument("--weights", choices=("raw", "ema"), help="Override inference.weights (default: raw)")
+    sampling = parser.add_mutually_exclusive_group()
+    sampling.add_argument("--stochastic", action="store_false", dest="deterministic",
+                          help="Use native stochastic DDIM sampling")
+    sampling.add_argument("--deterministic", action="store_true", dest="deterministic",
+                          help="Use native deterministic DDIM sampling (default)")
+    parser.set_defaults(deterministic=None)
+    parser.add_argument("--dataset-root", type=Path, help="Override LeRobot dataset root")
+    parser.add_argument("--samples", type=int, help="Override inference.samples (default: 1)")
     args = parser.parse_args()
-    if args.samples < 1:
+
+    options = _read_inference_config(args.config) if args.config is not None else {}
+    checkpoint_path = args.checkpoint or options.get("checkpoint_path")
+    if checkpoint_path is None:
+        parser.error("Provide --checkpoint or --config with inference.checkpoint_path.")
+    device = torch.device(args.device if args.device is not None else options.get("device") or "cuda:0")
+    weights = args.weights if args.weights is not None else options.get("weights", "raw")
+    deterministic = (args.deterministic if args.deterministic is not None
+                     else options.get("deterministic", True))
+    dataset_root = (args.dataset_root if args.dataset_root is not None
+                    else options.get("dataset_root"))
+    samples = args.samples if args.samples is not None else options.get("samples", 1)
+    if samples < 1:
         parser.error("--samples must be positive.")
 
-    policy, spec, config = load_inference_policy(args.checkpoint, device=args.device, weights=args.weights)
+    policy, spec, config = load_inference_policy(checkpoint_path, device=device, weights=weights)
     from arbim.data.lerobot_adapter import LeRobotDP2DDataset
 
     dataset_cfg = dict(config["dataset"])
     dataset_cfg.pop("horizon", None)
     dataset_cfg.pop("n_obs_steps", None)
-    if args.dataset_root is not None:
-        dataset_cfg["root"] = args.dataset_root
+    if dataset_root is not None:
+        dataset_cfg["root"] = Path(dataset_root)
     dataset_cfg.update(
         horizon=config["policy"]["horizon"], n_obs_steps=config["policy"]["n_obs_steps"],
         state_key=spec["state_key"], action_key=spec["action_key"],
@@ -244,20 +291,19 @@ def main() -> None:
     dataset = LeRobotDP2DDataset(**dataset_cfg)
     if dataset.spec != spec:
         raise ValueError("Validation dataset metadata does not match checkpoint dataset_spec.")
-    if len(dataset) < args.samples:
-        raise ValueError(f"Requested {args.samples} validation windows, only {len(dataset)} available.")
+    if len(dataset) < samples:
+        raise ValueError(f"Requested {samples} validation windows, only {len(dataset)} available.")
 
-    device = torch.device(args.device)
-    print(f"checkpoint={args.checkpoint} weights={args.weights} device={device} "
-          f"deterministic={not args.stochastic}")
-    for idx in range(args.samples):
+    print(f"checkpoint={checkpoint_path} weights={weights} device={device} "
+          f"deterministic={deterministic}")
+    for idx in range(samples):
         # __getitem__ supplies [To,...]; batching produces [1,To,...].
         raw = {key: value.unsqueeze(0) for key, value in dataset[idx]["obs"].items()}
         obs = prepare_observation(raw, spec, config["policy"]["n_obs_steps"], device=device)
         if device.type == "cuda":
             torch.cuda.synchronize(device)
         start = time.perf_counter()
-        result = predict(policy, obs, deterministic=not args.stochastic)
+        result = predict(policy, obs, deterministic=deterministic)
         if device.type == "cuda":
             torch.cuda.synchronize(device)
         elapsed_ms = (time.perf_counter() - start) * 1000.0
