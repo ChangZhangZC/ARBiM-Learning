@@ -1,0 +1,10 @@
+# Task 4: native RL100 DP-2D checkpoint inference (no environment or robot control).
+# Model architecture, observation/action dimensions, camera mapping, diffusion
+# scheduler and Normalizer are restored from the checkpoint contract, NOT here.
+inference:
+  checkpoint_path: /path/to/run/checkpoints/best.ckpt  # best.ckpt or last.ckpt
+  weights: raw                  # raw; ema requires last.ckpt
+  device: cuda:0                # cuda:0, cuda:1, cpu, ...
+  deterministic: true           # true=fixed-seed native DDIM; false=native stochastic sampling
+  samples: 1                    # number of LeRobot validation windows for a smoke test
+  dataset_root: null            # null=dataset.root saved in checkpoint; override if relocated
