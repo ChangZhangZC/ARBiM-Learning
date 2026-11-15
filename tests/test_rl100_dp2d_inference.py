@@ -240,6 +240,23 @@ def test_predict_rejects_nonfinite_output(contract, native_stubs):
         predict(BadPolicy().eval(), obs)
 
 
+def test_predict_rejects_inconsistent_finite_slice(contract, native_stubs):
+    class MisalignedPolicy(TinyNativePolicy):
+        def predict_action(self, observation, *, deterministic=False):
+            result = super().predict_action(observation, deterministic=deterministic)
+            return {
+                "action": result["action"] + 1.0,
+                "action_pred": result["action_pred"],
+            }
+
+    obs = prepare_observation(
+        {"agent_pos": torch.ones(1, 2, 6), "rgb_0": torch.zeros(1, 2, 3, 4, 5)},
+        contract["dataset_spec"], 2,
+    )
+    with pytest.raises(ValueError, match="action_pred slice"):
+        predict(MisalignedPolicy().eval(), obs)
+
+
 def test_legacy_checkpoint_horizon_recovery(contract):
     old = copy.deepcopy(contract)
     old["dataset"]["horizon"] = old["policy"].pop("horizon")
