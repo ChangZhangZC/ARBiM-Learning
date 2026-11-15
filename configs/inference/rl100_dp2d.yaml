@@ -7,3 +7,5 @@ inference:
   device: cuda:0                 # cuda:0, cuda:1, cpu, ...
   deterministic: true            # true=native deterministic DDIM; false=stochastic
   n_action_steps: null           # null=checkpoint; optional output slice length (1..predicted steps)
+  num_inference_steps: null      # null=checkpoint; otherwise override native DDIM denoising steps
+  seed: null                     # null=leave PyTorch RNG unchanged; integer seeds once per run
