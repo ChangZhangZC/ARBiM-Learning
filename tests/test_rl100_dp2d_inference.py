@@ -13,7 +13,8 @@ import pytest
 import torch
 
 from arbim.policy.inference_rl100_dp2d import (
-    _model_config, _read_inference_config, load_inference_policy, prepare_observation, predict,
+    _model_config, _read_inference_config, load_inference_policy,
+    prepare_observation, predict, seed_inference,
 )
 
 
@@ -256,7 +257,9 @@ def test_inference_yaml_reads_runtime_only(tmp_path):
         "  device: cuda:1\n"
         "  weights: raw\n"
         "  deterministic: true\n"
-        "  n_action_steps: 2\n",
+        "  n_action_steps: 2\n"
+        "  num_inference_steps: 8\n"
+        "  seed: 123\n",
         encoding="utf-8",
     )
     options = _read_inference_config(path)
@@ -265,6 +268,8 @@ def test_inference_yaml_reads_runtime_only(tmp_path):
     assert options["weights"] == "raw"
     assert options["deterministic"] is True
     assert options["n_action_steps"] == 2
+    assert options["num_inference_steps"] == 8
+    assert options["seed"] == 123
 
 
 @pytest.mark.parametrize(("text", "error"), [
@@ -277,6 +282,11 @@ def test_inference_yaml_reads_runtime_only(tmp_path):
     ("inference:\n  dataset_root: /tmp/data\n", "Unsupported"),
     ("inference:\n  n_action_steps: 0\n", "positive integer"),
     ("inference:\n  n_action_steps: 1.5\n", "positive integer"),
+    ("inference:\n  num_inference_steps: 0\n", "num_inference_steps"),
+    ("inference:\n  num_inference_steps: true\n", "num_inference_steps"),
+    ("inference:\n  seed: -1\n", "seed"),
+    ("inference:\n  seed: true\n", "seed"),
+    ("inference:\n  seed: 1.5\n", "seed"),
 ])
 def test_inference_yaml_rejects_invalid_settings(tmp_path, text, error):
     path = tmp_path / "bad.yaml"
@@ -305,3 +315,67 @@ def test_inference_action_steps_rejects_invalid(tmp_path, contract, native_stubs
     path, _, _ = _checkpoint(tmp_path, contract)
     with pytest.raises(ValueError, match="n_action_steps"):
         load_inference_policy(path, n_action_steps=steps)
+
+
+def test_ddim_steps_override_rebuilds_native_constructor(tmp_path, contract, native_stubs):
+    """Factory must see the override *before* Policy and DDIMSolver construction."""
+    path, _, _ = _checkpoint(tmp_path, contract)
+    contract["schedulers"]["ddim"]["num_train_timesteps"] = 100
+    contract["policy"]["num_inference_steps"] = 10
+    contract["policy"]["ddim_inference_steps"] = 9  # Native kwargs take priority.
+    path, _, _ = _checkpoint(tmp_path, contract)
+    original = torch.load(path, weights_only=True)["contract"]
+    seen = []
+
+    def factory(shape_meta, config):
+        seen.append(copy.deepcopy(config))
+        model = TinyNativePolicy()
+        model.ddim_inference_steps = config["policy"].get(
+            "ddim_inference_steps", config["policy"]["num_inference_steps"]
+        )
+        return model
+
+    native_stubs_policy = sys.modules["arbim.policy.rl100_dp"]
+    native_stubs_policy.build_rl100_dp = factory
+    policy, spec, cfg = load_inference_policy(path, num_inference_steps=6)
+    assert policy.ddim_inference_steps == 6
+    assert seen[0]["policy"]["num_inference_steps"] == 6
+    assert seen[0]["policy"]["ddim_inference_steps"] == 6
+    assert cfg["policy"]["num_inference_steps"] == 6
+    assert torch.load(path, weights_only=True)["contract"] == original
+    # No override retains all original constructor settings.
+    untouched, _, original_cfg = load_inference_policy(path)
+    assert untouched.ddim_inference_steps == 9
+    assert original_cfg["policy"]["num_inference_steps"] == 10
+
+
+@pytest.mark.parametrize("steps", [0, 101, -5, True, 1.5])
+def test_ddim_steps_override_rejects_out_of_range(tmp_path, contract, native_stubs, steps):
+    contract["schedulers"]["ddim"]["num_train_timesteps"] = 100
+    path, _, _ = _checkpoint(tmp_path, contract)
+    with pytest.raises(ValueError, match="num_inference_steps"):
+        load_inference_policy(path, num_inference_steps=steps)
+
+
+def test_ddim_steps_requires_saved_train_schedule(tmp_path, contract, native_stubs):
+    path, _, _ = _checkpoint(tmp_path, contract)
+    with pytest.raises(ValueError, match="num_train_timesteps"):
+        load_inference_policy(path, num_inference_steps=6)
+
+
+def test_seed_inference_once_and_null_preserves_rng():
+    seed_inference(1234)
+    first = torch.randn(3)
+    second = torch.randn(3)
+    seed_inference(1234)
+    torch.testing.assert_close(first, torch.randn(3))
+    torch.testing.assert_close(second, torch.randn(3))
+    before = torch.random.get_rng_state().clone()
+    seed_inference(None)
+    assert torch.equal(before, torch.random.get_rng_state())
+
+
+@pytest.mark.parametrize("seed", [-1, True, 1.5, 2**63])
+def test_seed_inference_invalid(seed):
+    with pytest.raises(ValueError, match="seed"):
+        seed_inference(seed)
