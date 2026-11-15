@@ -319,7 +319,6 @@ def test_inference_action_steps_rejects_invalid(tmp_path, contract, native_stubs
 
 def test_ddim_steps_override_rebuilds_native_constructor(tmp_path, contract, native_stubs):
     """Factory must see the override *before* Policy and DDIMSolver construction."""
-    path, _, _ = _checkpoint(tmp_path, contract)
     contract["schedulers"]["ddim"]["num_train_timesteps"] = 100
     contract["policy"]["num_inference_steps"] = 10
     contract["policy"]["ddim_inference_steps"] = 9  # Native kwargs take priority.
@@ -364,15 +363,19 @@ def test_ddim_steps_requires_saved_train_schedule(tmp_path, contract, native_stu
 
 
 def test_seed_inference_once_and_null_preserves_rng():
-    seed_inference(1234)
-    first = torch.randn(3)
-    second = torch.randn(3)
-    seed_inference(1234)
-    torch.testing.assert_close(first, torch.randn(3))
-    torch.testing.assert_close(second, torch.randn(3))
-    before = torch.random.get_rng_state().clone()
-    seed_inference(None)
-    assert torch.equal(before, torch.random.get_rng_state())
+    previous_state = torch.random.get_rng_state().clone()
+    try:
+        seed_inference(1234)
+        first = torch.randn(3)
+        second = torch.randn(3)
+        seed_inference(1234)
+        torch.testing.assert_close(first, torch.randn(3))
+        torch.testing.assert_close(second, torch.randn(3))
+        before = torch.random.get_rng_state().clone()
+        seed_inference(None)
+        assert torch.equal(before, torch.random.get_rng_state())
+    finally:
+        torch.random.set_rng_state(previous_state)
 
 
 @pytest.mark.parametrize("seed", [-1, True, 1.5, 2**63])
