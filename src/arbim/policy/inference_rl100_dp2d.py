@@ -83,11 +83,13 @@ def load_inference_policy(
     *,
     device: str | torch.device = "cpu",
     weights: str = "raw",
+    n_action_steps: int | None = None,
 ) -> tuple[torch.nn.Module, dict[str, Any], dict[str, Any]]:
     """Return (native policy, saved dataset_spec, saved model config).
 
     Supports Task 3 best.ckpt (raw) and last.ckpt (raw or EMA). The native
     Normalizer dynamically re-registers parameters on CPU during strict load.
+    n_action_steps optionally shortens the native inference output slice only.
     """
     if weights not in ("raw", "ema"):
         raise ValueError("weights must be 'raw' or 'ema'.")
@@ -125,6 +127,11 @@ def load_inference_policy(
     if any(param.device != device for param in policy.parameters()):
         raise ValueError("Native Policy contains off-device parameters.")
     _check_normalizer(policy, spec, device)
+    if n_action_steps is not None:
+        max_steps = policy.horizon - policy.n_obs_steps + 1
+        if type(n_action_steps) is not int or not 1 <= n_action_steps <= max_steps:
+            raise ValueError(f"n_action_steps must be an integer in [1, {max_steps}].")
+        policy.n_action_steps = n_action_steps
     return policy, spec, config
 
 
@@ -228,11 +235,11 @@ def _read_inference_config(path: str | Path) -> dict[str, Any]:
     if set(document) != {"inference"}:
         raise ValueError("Task 4 YAML only supports the top-level 'inference' mapping.")
     settings = document["inference"]
-    allowed = {"checkpoint_path", "device", "weights", "deterministic", "samples", "dataset_root"}
+    allowed = {"checkpoint_path", "device", "weights", "deterministic", "n_action_steps"}
     unexpected = set(settings) - allowed
     if unexpected:
         raise ValueError(f"Unsupported Task 4 inference settings: {sorted(unexpected)}")
-    for key in ("checkpoint_path", "device", "dataset_root"):
+    for key in ("checkpoint_path", "device"):
         value = settings.get(key)
         if value is not None and (not isinstance(value, str) or not value.strip()):
             raise ValueError(f"inference.{key} must be a nonempty string or null.")
@@ -240,8 +247,9 @@ def _read_inference_config(path: str | Path) -> dict[str, Any]:
         raise ValueError("inference.weights must be 'raw' or 'ema'.")
     if type(settings.get("deterministic", True)) is not bool:
         raise ValueError("inference.deterministic must be boolean.")
-    if type(settings.get("samples", 1)) is not int or settings.get("samples", 1) < 1:
-        raise ValueError("inference.samples must be a positive integer.")
+    steps = settings.get("n_action_steps")
+    if steps is not None and (type(steps) is not int or steps < 1):
+        raise ValueError("inference.n_action_steps must be a positive integer or null.")
     return settings
 
 
@@ -257,8 +265,9 @@ def main() -> None:
     sampling.add_argument("--deterministic", action="store_true", dest="deterministic",
                           help="Use native deterministic DDIM sampling (default)")
     parser.set_defaults(deterministic=None)
-    parser.add_argument("--dataset-root", type=Path, help="Override LeRobot dataset root")
-    parser.add_argument("--samples", type=int, help="Override inference.samples (default: 1)")
+    parser.add_argument("--n-action-steps", type=int, help="Override inference.n_action_steps (null uses checkpoint)")
+    parser.add_argument("--dataset-root", type=Path, help="Smoke test only: relocated LeRobot dataset root")
+    parser.add_argument("--samples", type=int, default=1, help="Smoke test only: number of validation windows")
     args = parser.parse_args()
 
     options = _read_inference_config(args.config) if args.config is not None else {}
@@ -269,13 +278,16 @@ def main() -> None:
     weights = args.weights if args.weights is not None else options.get("weights", "raw")
     deterministic = (args.deterministic if args.deterministic is not None
                      else options.get("deterministic", True))
-    dataset_root = (args.dataset_root if args.dataset_root is not None
-                    else options.get("dataset_root"))
-    samples = args.samples if args.samples is not None else options.get("samples", 1)
+    n_action_steps = (args.n_action_steps if args.n_action_steps is not None
+                      else options.get("n_action_steps"))
+    dataset_root = args.dataset_root
+    samples = args.samples
     if samples < 1:
         parser.error("--samples must be positive.")
 
-    policy, spec, config = load_inference_policy(checkpoint_path, device=device, weights=weights)
+    policy, spec, config = load_inference_policy(
+        checkpoint_path, device=device, weights=weights, n_action_steps=n_action_steps
+    )
     from arbim.data.lerobot_adapter import LeRobotDP2DDataset
 
     dataset_cfg = dict(config["dataset"])
@@ -295,7 +307,7 @@ def main() -> None:
         raise ValueError(f"Requested {samples} validation windows, only {len(dataset)} available.")
 
     print(f"checkpoint={checkpoint_path} weights={weights} device={device} "
-          f"deterministic={deterministic}")
+          f"deterministic={deterministic} n_action_steps={policy.n_action_steps}")
     for idx in range(samples):
         # __getitem__ supplies [To,...]; batching produces [1,To,...].
         raw = {key: value.unsqueeze(0) for key, value in dataset[idx]["obs"].items()}
