@@ -229,10 +229,10 @@ def predict(
     if tuple(action.shape) != (b, policy.n_action_steps, policy.action_dim):
         raise ValueError(f"Unexpected action shape: {tuple(action.shape)}")
     start = 0 if policy.no_pre_action else policy.n_obs_steps - 1
-    if not torch.equal(action, full[:, start:start + policy.n_action_steps]):
-        raise ValueError("Native action does not match the action_pred slice.")
     if not torch.isfinite(action).all() or not torch.isfinite(full).all():
         raise FloatingPointError("Native Policy returned NaN or Inf actions.")
+    if not torch.equal(action, full[:, start:start + policy.n_action_steps]):
+        raise ValueError("Native action does not match the action_pred slice.")
     target = next(policy.parameters()).device
     if action.device != target or full.device != target:
         raise ValueError("Native Policy returned actions on the wrong device.")
