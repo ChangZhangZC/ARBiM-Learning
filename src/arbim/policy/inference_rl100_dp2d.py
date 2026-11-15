@@ -84,12 +84,15 @@ def load_inference_policy(
     device: str | torch.device = "cpu",
     weights: str = "raw",
     n_action_steps: int | None = None,
+    num_inference_steps: int | None = None,
 ) -> tuple[torch.nn.Module, dict[str, Any], dict[str, Any]]:
     """Return (native policy, saved dataset_spec, saved model config).
 
     Supports Task 3 best.ckpt (raw) and last.ckpt (raw or EMA). The native
     Normalizer dynamically re-registers parameters on CPU during strict load.
     n_action_steps optionally shortens the native inference output slice only.
+    num_inference_steps is applied to a copy of saved constructor config, so
+    native DDIM scheduler/solver are rebuilt consistently without touching ckpt.
     """
     if weights not in ("raw", "ema"):
         raise ValueError("weights must be 'raw' or 'ema'.")
@@ -111,6 +114,16 @@ def load_inference_policy(
         raise ValueError("Checkpoint is missing its saved contract.")
     contract = payload["contract"]
     config = _model_config(contract)
+    if num_inference_steps is not None:
+        train_steps = config["schedulers"]["ddim"].get("num_train_timesteps")
+        if type(train_steps) is not int or train_steps < 1:
+            raise ValueError("Checkpoint has no valid DDIM num_train_timesteps for inference override.")
+        if (type(num_inference_steps) is not int
+                or not 1 <= num_inference_steps <= train_steps):
+            raise ValueError(f"num_inference_steps must be an integer in [1, {train_steps}].")
+        config["policy"]["num_inference_steps"] = num_inference_steps
+        if "ddim_inference_steps" in config["policy"]:
+            config["policy"]["ddim_inference_steps"] = num_inference_steps
     spec = copy.deepcopy(dict(contract["dataset_spec"]))
     _validate_spec(spec)
     state = payload.get("ema_policy" if weights == "ema" else "policy")
@@ -121,6 +134,9 @@ def load_inference_policy(
     from arbim.policy.rl100_dp import build_rl100_dp
 
     policy = build_rl100_dp(build_shape_meta(spec), config)  # CPU construction
+    if (num_inference_steps is not None
+            and getattr(policy, "ddim_inference_steps", None) != num_inference_steps):
+        raise ValueError("Native RL1002D did not apply the requested DDIM inference steps.")
     policy.load_state_dict(state, strict=True)
     policy.to(device)
     policy.eval()
@@ -224,6 +240,18 @@ def predict(
 
 
 
+def seed_inference(seed: int | None) -> None:
+    """Seed PyTorch once per run, not on each predict(); null preserves RNG state.
+
+    Native deterministic DDIM uses its own fixed seed=0 for initial noise.
+    """
+    if seed is None:
+        return
+    if type(seed) is not int or not 0 <= seed < 2**63:
+        raise ValueError("seed must be a nonnegative integer below 2**63 or null.")
+    torch.manual_seed(seed)
+
+
 def _read_inference_config(path: str | Path) -> dict[str, Any]:
     """Read only runtime settings; model structure always comes from checkpoint."""
     import yaml
@@ -235,7 +263,8 @@ def _read_inference_config(path: str | Path) -> dict[str, Any]:
     if set(document) != {"inference"}:
         raise ValueError("Task 4 YAML only supports the top-level 'inference' mapping.")
     settings = document["inference"]
-    allowed = {"checkpoint_path", "device", "weights", "deterministic", "n_action_steps"}
+    allowed = {"checkpoint_path", "device", "weights", "deterministic",
+               "n_action_steps", "num_inference_steps", "seed"}
     unexpected = set(settings) - allowed
     if unexpected:
         raise ValueError(f"Unsupported Task 4 inference settings: {sorted(unexpected)}")
@@ -250,6 +279,12 @@ def _read_inference_config(path: str | Path) -> dict[str, Any]:
     steps = settings.get("n_action_steps")
     if steps is not None and (type(steps) is not int or steps < 1):
         raise ValueError("inference.n_action_steps must be a positive integer or null.")
+    steps = settings.get("num_inference_steps")
+    if steps is not None and (type(steps) is not int or steps < 1):
+        raise ValueError("inference.num_inference_steps must be a positive integer or null.")
+    seed = settings.get("seed")
+    if seed is not None and (type(seed) is not int or not 0 <= seed < 2**63):
+        raise ValueError("inference.seed must be a nonnegative integer below 2**63 or null.")
     return settings
 
 
@@ -266,6 +301,10 @@ def main() -> None:
                           help="Use native deterministic DDIM sampling (default)")
     parser.set_defaults(deterministic=None)
     parser.add_argument("--n-action-steps", type=int, help="Override inference.n_action_steps (null uses checkpoint)")
+    parser.add_argument("--num-inference-steps", type=int,
+                        help="Override native DDIM denoising steps (null uses checkpoint)")
+    parser.add_argument("--seed", type=int,
+                        help="Set global PyTorch RNG once per inference run (null leaves RNG unchanged)")
     parser.add_argument("--dataset-root", type=Path, help="Smoke test only: relocated LeRobot dataset root")
     parser.add_argument("--samples", type=int, default=1, help="Smoke test only: number of validation windows")
     args = parser.parse_args()
@@ -280,14 +319,19 @@ def main() -> None:
                      else options.get("deterministic", True))
     n_action_steps = (args.n_action_steps if args.n_action_steps is not None
                       else options.get("n_action_steps"))
+    num_inference_steps = (args.num_inference_steps if args.num_inference_steps is not None
+                           else options.get("num_inference_steps"))
+    seed = args.seed if args.seed is not None else options.get("seed")
     dataset_root = args.dataset_root
     samples = args.samples
     if samples < 1:
         parser.error("--samples must be positive.")
 
     policy, spec, config = load_inference_policy(
-        checkpoint_path, device=device, weights=weights, n_action_steps=n_action_steps
+        checkpoint_path, device=device, weights=weights,
+        n_action_steps=n_action_steps, num_inference_steps=num_inference_steps,
     )
+    seed_inference(seed)
     from arbim.data.lerobot_adapter import LeRobotDP2DDataset
 
     dataset_cfg = dict(config["dataset"])
@@ -307,7 +351,8 @@ def main() -> None:
         raise ValueError(f"Requested {samples} validation windows, only {len(dataset)} available.")
 
     print(f"checkpoint={checkpoint_path} weights={weights} device={device} "
-          f"deterministic={deterministic} n_action_steps={policy.n_action_steps}")
+          f"deterministic={deterministic} n_action_steps={policy.n_action_steps} "
+          f"ddim_inference_steps={policy.ddim_inference_steps} seed={seed}")
     for idx in range(samples):
         # __getitem__ supplies [To,...]; batching produces [1,To,...].
         raw = {key: value.unsqueeze(0) for key, value in dataset[idx]["obs"].items()}
