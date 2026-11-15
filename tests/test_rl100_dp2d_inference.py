@@ -13,7 +13,7 @@ import pytest
 import torch
 
 from arbim.policy.inference_rl100_dp2d import (
-    _model_config, load_inference_policy, prepare_observation, predict,
+    _model_config, _read_inference_config, load_inference_policy, prepare_observation, predict,
 )
 
 
@@ -246,3 +246,40 @@ def test_legacy_checkpoint_horizon_recovery(contract):
     config = _model_config(old)
     assert config["policy"]["horizon"] == 5
     assert config["policy"]["n_obs_steps"] == 2
+
+
+def test_inference_yaml_reads_runtime_only(tmp_path):
+    path = tmp_path / "inference.yaml"
+    path.write_text(
+        "inference:\n"
+        "  checkpoint_path: /tmp/model/best.ckpt\n"
+        "  device: cuda:1\n"
+        "  weights: raw\n"
+        "  deterministic: true\n"
+        "  samples: 2\n"
+        "  dataset_root: null\n",
+        encoding="utf-8",
+    )
+    options = _read_inference_config(path)
+    assert options["checkpoint_path"] == "/tmp/model/best.ckpt"
+    assert options["device"] == "cuda:1"
+    assert options["weights"] == "raw"
+    assert options["deterministic"] is True
+    assert options["samples"] == 2
+    assert options["dataset_root"] is None
+
+
+@pytest.mark.parametrize(("text", "error"), [
+    ("policy:\n  horizon: 5\n", "inference"),
+    ("inference: {}\npolicy:\n  horizon: 5\n", "top-level"),
+    ("inference:\n  horizon: 5\n", "Unsupported"),
+    ("inference:\n  weights: invalid\n", "weights"),
+    ("inference:\n  deterministic: 'false'\n", "boolean"),
+    ("inference:\n  samples: 0\n", "positive integer"),
+    ("inference:\n  dataset_root: []\n", "dataset_root"),
+])
+def test_inference_yaml_rejects_invalid_settings(tmp_path, text, error):
+    path = tmp_path / "bad.yaml"
+    path.write_text(text, encoding="utf-8")
+    with pytest.raises(ValueError, match=error):
+        _read_inference_config(path)
