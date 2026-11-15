@@ -66,8 +66,8 @@ class TinyNativePolicy(torch.nn.Module):
         assert observation["agent_pos"].dtype == torch.float32
         assert observation["rgb_0"].shape[1:] == (2, 3, 4, 5)
         out = self.linear(observation["agent_pos"][:, -1])
-        return {"action": out[:, None, :].expand(-1, 4, -1),
-                "action_pred": out[:, None, :].expand(-1, 4, -1)}
+        full = out[:, None, :].expand(-1, 4, -1)
+        return {"action": full[:, :self.n_action_steps], "action_pred": full}
 
 
 @pytest.fixture
@@ -256,8 +256,7 @@ def test_inference_yaml_reads_runtime_only(tmp_path):
         "  device: cuda:1\n"
         "  weights: raw\n"
         "  deterministic: true\n"
-        "  samples: 2\n"
-        "  dataset_root: null\n",
+        "  n_action_steps: 2\n",
         encoding="utf-8",
     )
     options = _read_inference_config(path)
@@ -265,8 +264,7 @@ def test_inference_yaml_reads_runtime_only(tmp_path):
     assert options["device"] == "cuda:1"
     assert options["weights"] == "raw"
     assert options["deterministic"] is True
-    assert options["samples"] == 2
-    assert options["dataset_root"] is None
+    assert options["n_action_steps"] == 2
 
 
 @pytest.mark.parametrize(("text", "error"), [
@@ -275,11 +273,35 @@ def test_inference_yaml_reads_runtime_only(tmp_path):
     ("inference:\n  horizon: 5\n", "Unsupported"),
     ("inference:\n  weights: invalid\n", "weights"),
     ("inference:\n  deterministic: 'false'\n", "boolean"),
-    ("inference:\n  samples: 0\n", "positive integer"),
-    ("inference:\n  dataset_root: []\n", "dataset_root"),
+    ("inference:\n  samples: 1\n", "Unsupported"),
+    ("inference:\n  dataset_root: /tmp/data\n", "Unsupported"),
+    ("inference:\n  n_action_steps: 0\n", "positive integer"),
+    ("inference:\n  n_action_steps: 1.5\n", "positive integer"),
 ])
 def test_inference_yaml_rejects_invalid_settings(tmp_path, text, error):
     path = tmp_path / "bad.yaml"
     path.write_text(text, encoding="utf-8")
     with pytest.raises(ValueError, match=error):
         _read_inference_config(path)
+
+
+@pytest.mark.parametrize("steps", [1, 2, 4])
+def test_inference_action_steps_override(tmp_path, contract, native_stubs, steps):
+    path, _, _ = _checkpoint(tmp_path, contract)
+    policy, spec, saved_config = load_inference_policy(path, n_action_steps=steps)
+    assert saved_config["policy"]["n_action_steps"] == 4  # Checkpoint remains untouched.
+    assert policy.n_action_steps == steps
+    obs = prepare_observation(
+        {"agent_pos": torch.ones(1, 2, 6), "rgb_0": torch.zeros(1, 2, 3, 4, 5)},
+        spec, 2,
+    )
+    result = predict(policy, obs)
+    assert result["action_pred"].shape == (1, 4, 6)
+    assert result["action"].shape == (1, steps, 6)
+
+
+@pytest.mark.parametrize("steps", [0, 5, -1, True, 2.5])
+def test_inference_action_steps_rejects_invalid(tmp_path, contract, native_stubs, steps):
+    path, _, _ = _checkpoint(tmp_path, contract)
+    with pytest.raises(ValueError, match="n_action_steps"):
+        load_inference_policy(path, n_action_steps=steps)
