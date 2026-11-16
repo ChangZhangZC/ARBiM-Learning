@@ -311,3 +311,24 @@ def test_previous_v2_run_resume_after_yaml_reorganization(fake_native, tmp_path)
     assert final["global_step"] == 6
     assert final["contract"]["dataset"] == previous["dataset"]
     assert final["contract"]["dataloader"] == previous["dataloader"]
+
+
+def test_action_step_bound_allows_shorter_inference_chunks():
+    cfg = profile()
+    cfg["policy"].update(horizon=16, n_obs_steps=2, n_action_steps=8)
+    check_config(cfg)
+    cfg["policy"]["n_action_steps"] = 15
+    check_config(cfg)
+    for invalid in (0, 16, -1, 1.5):
+        cfg["policy"]["n_action_steps"] = invalid
+        with pytest.raises(ValueError, match="n_action_steps"):
+            check_config(cfg)
+
+
+def test_resume_yaml_fields_do_not_affect_config_validation():
+    cfg = profile()
+    cfg["checkpoint"].update(resume=True, resume_path="run/checkpoints/last.ckpt")
+    check_config(cfg)
+    cfg["dataset"]["val_ratio"] = 0.0
+    cfg["validation"].update(every_steps=None, every_epochs=None, on_finish=False)
+    check_config(cfg)
