@@ -81,12 +81,12 @@ def main(argv: list[str] | None = None) -> int:
         print("\nEvaluation cancelled.")
         return 130
 
-    # Preserve the existing evaluation CLI, dependency loading, and exit status.
-    subprocess.run(
+    # Run the original evaluation CLI and return its exit status unchanged.
+    result = subprocess.run(
         [sys.executable, "-m", "arbim.rollout.eval", "--config", str(path)],
-        check=True,
+        check=False,
     )
-    return 0
+    return result.returncode
 
 
 if __name__ == "__main__":
