@@ -71,6 +71,11 @@ def create_duobench_env(settings: Mapping[str, Any]):
     for flag in ("headless", "realtime", "async_control"):
         if flag in settings and type(settings[flag]) is not bool:
             raise ValueError(f"env.{flag} must be boolean.")
+    resolution = settings.get("camera_resolution")
+    if resolution is not None:
+        if (not isinstance(resolution, (list, tuple)) or len(resolution) != 2
+                or any(type(value) is not int or value < 2 or value % 2 for value in resolution)):
+            raise ValueError("env.camera_resolution must be [even_width, even_height] or null.")
 
     import gymnasium as gym
     from duobench.tasks.hinge_chest import HingeChestEnvConfig
@@ -82,6 +87,12 @@ def create_duobench_env(settings: Mapping[str, Any]):
     cfg.max_relative_movement = None
     cfg.wrapper_cfg.binary_gripper = True
     cfg.wrapper_cfg.include_depth = False
+    if resolution is not None:
+        if cfg.camera_cfgs is None or not set(CAMERAS).issubset(cfg.camera_cfgs):
+            raise ValueError("Hinge-Chest is missing the expected native RGB cameras.")
+        for camera in CAMERAS:
+            cfg.camera_cfgs[camera].resolution_width = resolution[0]
+            cfg.camera_cfgs[camera].resolution_height = resolution[1]
     cfg.headless = settings.get("headless", True)
     # Mutate, rather than replace, DuoBench's SimConfig: it sets extra
     # MuJoCo memory for contact-rich scenes.
