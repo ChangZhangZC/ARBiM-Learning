@@ -2,12 +2,12 @@
 env:
   backend: duobench
   task: hinge_chest
-  headless: true
+  headless: false
   control_mode: joints            # absolute joint positions
   relative_to: none
   frequency: 30
   camera_resolution: null        # null=RCS native (currently 1280x720); [1920, 1080] for Full HD
-  realtime: false
+  realtime: true
   async_control: true
   binary_gripper: true
   binarize_state_gripper: true    # RCS lerobot-convert --binarize-gripper
