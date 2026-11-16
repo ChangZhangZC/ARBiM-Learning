@@ -104,12 +104,14 @@ def load_inference_policy(
     if not isinstance(payload, dict) or payload.get("format_version") != 2:
         raise ValueError("Expected an ARBiM Task 3 version-2 checkpoint.")
     role = payload.get("checkpoint_role")
-    if role not in ("best_policy", "training"):
+    if role not in ("best_policy", "training", "policy_snapshot"):
         raise ValueError(f"Unsupported checkpoint_role: {role!r}")
-    if role == "best_policy" and payload.get("selected_weights") != "raw":
-        raise ValueError("best_policy checkpoint must declare selected_weights='raw'.")
+    if role in ("best_policy", "policy_snapshot") and payload.get("selected_weights") != "raw":
+        raise ValueError(f"{role} checkpoint must declare selected_weights='raw'.")
     if role == "best_policy" and weights == "ema":
         raise ValueError("best.ckpt contains raw Policy only; EMA requires last.ckpt.")
+    if role == "policy_snapshot" and weights == "ema":
+        raise ValueError("policy_snapshot contains raw Policy only; EMA requires a training checkpoint.")
     if not isinstance(payload.get("contract"), Mapping):
         raise ValueError("Checkpoint is missing its saved contract.")
     contract = payload["contract"]
