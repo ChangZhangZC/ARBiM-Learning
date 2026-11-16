@@ -6,6 +6,7 @@ env:
   control_mode: joints            # absolute joint positions
   relative_to: none
   frequency: 30
+  camera_resolution: null        # null=RCS native (currently 1280x720); [1920, 1080] for Full HD
   realtime: false
   async_control: true
   binary_gripper: true
@@ -30,5 +31,6 @@ rollout:
 output:
   root: outputs/eval
   run_id: null                   # null=timestamp with microseconds; never overwrite runs
-  record_video: true             # policy-facing 224x224 RGB; CLI --no-video to disable
+  record_video: true             # CLI --no-video to disable
+  video_source: native           # native=original RGB resolution; policy=224x224
   video_fps: null                # null=env.frequency, one frame per env step (+ reset)

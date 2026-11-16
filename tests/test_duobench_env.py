@@ -181,3 +181,13 @@ def test_real_hinge_chest_reset_step(spec, camera_map):
         assert isinstance(truncated, (bool, np.bool_))
     finally:
         native.close()
+
+
+
+@pytest.mark.parametrize("resolution", [
+    [1280], [1280, 720, 30], [1920, 1079], [0, 720],
+    [True, 720], ["1920", 1080], "1080p",
+])
+def test_invalid_native_camera_resolution_rejected(resolution):
+    with pytest.raises(ValueError, match="camera_resolution"):
+        create_duobench_env({"task": "hinge_chest", "camera_resolution": resolution})

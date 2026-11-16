@@ -1,7 +1,7 @@
 """Multi-episode DuoBench evaluation of a frozen, native RL100 DP-2D policy.
 
 The Task 5.3 episode loop remains the single source of action scheduling.
-Three policy-facing RGB streams are written incrementally as MP4 files.
+Three RGB streams are written incrementally from native DuoBench frames by default.
 """
 from __future__ import annotations
 
@@ -105,6 +105,7 @@ def evaluate_episodes(
     deterministic: bool = True,
     record_video: bool = True,
     video_fps: float = 30.0,
+    video_source: str = "policy",
 ) -> dict[str, Any]:
     """Run sequential episodes reusing Policy and environment.
 
@@ -117,6 +118,8 @@ def evaluate_episodes(
         raise ValueError("seed and per-episode increments must be nonnegative and below 2**63.")
     if type(record_video) is not bool:
         raise ValueError("record_video must be boolean.")
+    if video_source not in ("native", "policy"):
+        raise ValueError("video_source must be 'native' or 'policy'.")
     if not isinstance(camera_map, Mapping) or set(camera_map.values()) != {
         "head", "left_wrist", "right_wrist"
     } or set(camera_map) != set(spec["camera_keys"]):
@@ -144,6 +147,23 @@ def evaluate_episodes(
                 EpisodeVideoRecorder(folder / f"episode_{index:03d}", camera_map, video_fps)
                 if record_video else None
             )
+            def record_frame(observation: Mapping[str, Any], step: int) -> None:
+                if recorder is None:
+                    return
+                if video_source == "policy":
+                    recorder.write(observation, step)
+                    return
+                raw = getattr(adapter, "last_raw_observation", None)
+                if not isinstance(raw, Mapping) or not isinstance(raw.get("frames"), Mapping):
+                    raise ValueError("DuoBench raw camera frames are unavailable.")
+                frames = raw["frames"]
+                try:
+                    rgb = {key: frames[camera]["rgb"]["data"]
+                           for key, camera in camera_map.items()}
+                except (KeyError, TypeError) as exc:
+                    raise ValueError("DuoBench raw RGB camera data is missing.") from exc
+                recorder.write(rgb, step)
+
             try:
                 result = run_single_episode(
                     adapter, policy, spec,
@@ -151,7 +171,7 @@ def evaluate_episodes(
                     max_env_steps=max_env_steps,
                     seed=episode_seed,
                     deterministic=deterministic,
-                    on_frame=recorder.write if recorder is not None else None,
+                    on_frame=record_frame if recorder is not None else None,
                 )
                 if recorder is not None and recorder.frame_count != result["episode_steps"] + 1:
                     raise RuntimeError("Recorded video frame count disagrees with executed environment steps.")
@@ -225,6 +245,7 @@ def main() -> None:
     num_episodes = rollout_cfg.get("num_episodes", 10)
     seed = rollout_cfg.get("seed")
     record_video = output_cfg.get("record_video", True)
+    video_source = output_cfg.get("video_source", "native")
     video_fps = (env_cfg.get("frequency", 30) if output_cfg.get("video_fps") is None
                  else output_cfg["video_fps"])
     root = Path(output_cfg.get("root", "outputs/eval")).expanduser()
@@ -253,7 +274,8 @@ def main() -> None:
         rollout_cfg["num_episodes"] = num_episodes
         rollout_cfg["execute_steps"] = rollout_cfg.get("execute_steps", policy.n_action_steps)
         rollout_cfg["max_env_steps"] = rollout_cfg.get("max_env_steps", 1000)
-        output_cfg.update(run_id=run_id, run_dir=str(run_dir), record_video=record_video, video_fps=video_fps)
+        output_cfg.update(run_id=run_id, run_dir=str(run_dir), record_video=record_video,
+                          video_fps=video_fps, video_source=video_source)
         with (run_dir / "config_resolved.yaml").open("w", encoding="utf-8") as stream:
             yaml.safe_dump(config, stream, sort_keys=False, allow_unicode=True)
         evaluate_episodes(
@@ -267,6 +289,7 @@ def main() -> None:
             deterministic=policy_cfg.get("deterministic", True),
             record_video=record_video,
             video_fps=video_fps,
+            video_source=video_source,
         )
     finally:
         env.close()
