@@ -14,13 +14,13 @@ import yaml
 DEFAULT_CONFIG = Path("configs/rollout/hinge_chest.yaml")
 
 
-def _choice(label: str, options: dict[str, str], default: str) -> str:
+def _choice(label: str, options: dict[str, str]) -> str:
     """Present a short fixed menu; unvalidated tasks/modes are not advertised."""
     print(label)
     for key, value in options.items():
         print(f"  {key}) {value}")
     while True:
-        answer = input(f"Choice (default {default}): ").strip() or default
+        answer = input("Choice: ").strip()
         if answer in options:
             return options[answer]
         print(f"Invalid choice: {answer!r}.")
@@ -52,22 +52,28 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         task = args.task or (
-            "hinge_chest" if args.yes else _choice("DuoBench task:", {"1": "hinge_chest"}, "1")
+            "hinge_chest" if args.yes else _choice("DuoBench task:", {"1": "hinge_chest"})
         )
         mode = args.mode or (
             "normal" if args.yes else _choice(
-                "Rollout mode:", {"1": "normal", "2": "routed"}, "1"
-            )
+                "Rollout mode:", {"1": "normal", "2": "routed"
+            })
         )
         if mode == "routed":
             print("Routed Rollout is not implemented; no evaluation was started.")
             return 2
 
-        default_path = str(DEFAULT_CONFIG)
-        path = args.config or Path(
-            default_path if args.yes else
-            (input(f"Rollout YAML (default: {default_path}): ").strip() or default_path)
-        )
+        if args.config is not None:
+            path = args.config
+        elif args.yes:
+            path = DEFAULT_CONFIG
+        else:
+            raw_path = ""
+            while not raw_path:
+                raw_path = input("Rollout YAML: ").strip()
+                if not raw_path:
+                    print("Please enter a YAML path.")
+            path = Path(raw_path)
         path = path.expanduser().resolve()
         config = _read_config(path, task)
         print(f"\nTask: {task}\nMode: {mode}\nYAML: {path}")
