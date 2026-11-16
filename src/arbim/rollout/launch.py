@@ -20,7 +20,7 @@ def _choice(label: str, options: dict[str, str], default: str) -> str:
     for key, value in options.items():
         print(f"  {key}) {value}")
     while True:
-        answer = input(f"Choice [{default}]: ").strip() or default
+        answer = input(f"Choice (default {default}): ").strip() or default
         if answer in options:
             return options[answer]
         print(f"Invalid choice: {answer!r}.")
@@ -66,7 +66,7 @@ def main(argv: list[str] | None = None) -> int:
         default_path = str(DEFAULT_CONFIG)
         path = args.config or Path(
             default_path if args.yes else
-            (input(f"Rollout YAML [{default_path}]: ").strip() or default_path)
+            (input(f"Rollout YAML (default: {default_path}): ").strip() or default_path)
         )
         path = path.expanduser().resolve()
         config = _read_config(path, task)
