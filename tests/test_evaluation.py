@@ -287,3 +287,53 @@ def test_existing_episode_log_is_never_overwritten(tmp_path, spec, camera_map):
             execute_steps=16, max_env_steps=3, record_video=False,
         )
     assert path.read_text() == "previous run\n"
+
+
+
+def test_native_video_uses_raw_resolution_not_policy_window(
+    tmp_path, spec, camera_map, fake_cv2, monkeypatch
+):
+    class Adapter:
+        last_raw_observation = None
+
+    adapter = Adapter()
+
+    def fake_episode(instance, policy, saved_spec, **kwargs):
+        assert instance is adapter
+        for step in range(3):
+            instance.last_raw_observation = {
+                "frames": {
+                    camera: {"rgb": {"data": np.full((6, 10, 3), 20 + step, dtype=np.uint8)}}
+                    for camera in camera_map.values()
+                }
+            }
+            kwargs["on_frame"](_frame(camera_map), step)  # policy RGB remains 4x5
+        return {
+            "success": False, "terminated": False, "truncated": False,
+            "max_steps_reached": True, "stop_reason": "max_env_steps",
+            "episode_steps": 2, "episode_return": 0.0, "final_stage": 0,
+            "inference_count": 1, "mean_inference_ms": 1.0, "elapsed_time": 0.5,
+        }
+
+    monkeypatch.setattr(evaluation, "run_single_episode", fake_episode)
+    evaluation.evaluate_episodes(
+        adapter, SimpleNamespace(n_action_steps=16), spec,
+        num_episodes=1, output_dir=tmp_path,
+        camera_map=camera_map, execute_steps=16, max_env_steps=2,
+        video_source="native", record_video=True,
+    )
+    assert len(fake_cv2) == 3
+    assert all(writer.size == (10, 6) and len(writer.frames) == 3 for writer in fake_cv2)
+    assert all(writer.released for writer in fake_cv2)
+    assert all(writer.frames[0].shape == (6, 10, 3) for writer in fake_cv2)
+
+
+def test_invalid_video_source_rejected_before_run(tmp_path, spec, camera_map):
+    with pytest.raises(ValueError, match="video_source"):
+        evaluation.evaluate_episodes(
+            object(), SimpleNamespace(n_action_steps=16), spec,
+            num_episodes=1, output_dir=tmp_path / "run",
+            camera_map=camera_map, execute_steps=16, max_env_steps=2,
+            record_video=True, video_source="upscaled",
+        )
+    assert not (tmp_path / "run").exists()
