@@ -131,6 +131,9 @@ def evaluate_episodes(
 
     folder = Path(output_dir)
     folder.mkdir(parents=True, exist_ok=True)
+    for name in ("episodes.jsonl", "evaluation.log", "summary.json"):
+        if (folder / name).exists():
+            raise FileExistsError(f"Refusing to overwrite an existing evaluation file: {folder / name}")
     records: list[dict[str, Any]] = []
     with (folder / "episodes.jsonl").open("w", encoding="utf-8") as episodes_file, (
         folder / "evaluation.log"
