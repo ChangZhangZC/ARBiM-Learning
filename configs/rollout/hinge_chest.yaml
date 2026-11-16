@@ -1,5 +1,4 @@
-# Task 5.2: Hinge-Chest environment settings; full rollout is not runnable yet.
-# Camera feature keys must match the future checkpoint dataset_spec exactly.
+# Task 5.3: one closed-loop Hinge-Chest episode (no videos or multi-episode evaluation).
 env:
   backend: duobench
   task: hinge_chest
@@ -16,7 +15,15 @@ env:
     observation.images.head: head
     observation.images.left_wrist: left_wrist
     observation.images.right_wrist: right_wrist
-# Actual inference and evaluation settings belong to later Task 5 phases.
-policy: {}
-rollout: {}
-output: {}
+policy:
+  checkpoint_path: outputs/train_il/hinge_chest/rl100_dp2d/20261115_132245/checkpoints/best.ckpt
+  weights: raw
+  device: cuda:0
+  deterministic: true
+  n_action_steps: null           # null = checkpoint's native action slice
+  num_inference_steps: null      # null = checkpoint's native DDIM settings
+rollout:
+  execute_steps: 16              # each prediction executes up to this many steps
+  max_env_steps: 1000            # set --max-env-steps 32 for initial smoke
+  seed: 42
+output: {}                       # Task 5.4
