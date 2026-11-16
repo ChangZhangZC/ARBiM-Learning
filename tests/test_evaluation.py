@@ -275,3 +275,15 @@ def test_real_mp4_codec_writes_readable_three_view_video(tmp_path, camera_map):
             assert decoded == 3
         finally:
             reader.release()
+
+
+def test_existing_episode_log_is_never_overwritten(tmp_path, spec, camera_map):
+    path = tmp_path / "episodes.jsonl"
+    path.write_text("previous run\n")
+    with pytest.raises(FileExistsError, match="Refusing to overwrite"):
+        evaluation.evaluate_episodes(
+            object(), SimpleNamespace(n_action_steps=16), spec,
+            num_episodes=1, output_dir=tmp_path, camera_map=camera_map,
+            execute_steps=16, max_env_steps=3, record_video=False,
+        )
+    assert path.read_text() == "previous run\n"
