@@ -1,7 +1,22 @@
-# Task 5 Hinge-Chest rollout configuration placeholder; not runnable yet.
-# These sections are reserved for the environment, inference and evaluation
-# contracts. Populate and validate them during Task 5 implementation.
-env: {}
+# Task 5.2: Hinge-Chest environment settings; full rollout is not runnable yet.
+# Camera feature keys must match the future checkpoint dataset_spec exactly.
+env:
+  backend: duobench
+  task: hinge_chest
+  headless: true
+  control_mode: joints            # absolute joint positions
+  relative_to: none
+  frequency: 30
+  realtime: false
+  async_control: true
+  binary_gripper: true
+  binarize_state_gripper: true    # RCS lerobot-convert --binarize-gripper
+  gripper_threshold: 0.9         # RCS converter uses > 0.9
+  camera_map:
+    observation.images.head: head
+    observation.images.left_wrist: left_wrist
+    observation.images.right_wrist: right_wrist
+# Actual inference and evaluation settings belong to later Task 5 phases.
 policy: {}
 rollout: {}
 output: {}
