@@ -142,3 +142,14 @@ def test_invalid_parameters_rejected_before_reset(spec, settings):
     with pytest.raises(ValueError):
         single.run_single_episode(adapter, FakePolicy(), spec, **settings)
     assert adapter.reset_count == 0
+
+
+def test_frame_callback_emits_reset_and_each_step(spec):
+    adapter, policy = FakeAdapter(spec), FakePolicy()
+    frames = []
+    result = single.run_single_episode(
+        adapter, policy, spec, execute_steps=2, max_env_steps=3,
+        on_frame=lambda obs, step: frames.append((step, obs["observation.state"][0])),
+    )
+    assert result["episode_steps"] == 3
+    assert frames == [(0, 1000.0), (1, 1001.0), (2, 1002.0), (3, 1003.0)]
