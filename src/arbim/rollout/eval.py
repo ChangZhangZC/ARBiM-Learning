@@ -222,7 +222,8 @@ def main() -> None:
     num_episodes = rollout_cfg.get("num_episodes", 10)
     seed = rollout_cfg.get("seed")
     record_video = output_cfg.get("record_video", True)
-    video_fps = output_cfg.get("video_fps") or env_cfg.get("frequency", 30)
+    video_fps = (env_cfg.get("frequency", 30) if output_cfg.get("video_fps") is None
+                 else output_cfg["video_fps"])
     root = Path(output_cfg.get("root", "outputs/eval")).expanduser()
     run_id = output_cfg.get("run_id") or datetime.now().strftime("%Y%m%d_%H%M%S_%f")
     if not isinstance(run_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]+", run_id):
@@ -246,7 +247,10 @@ def main() -> None:
         )
         # An existing run must never be silently overwritten.
         run_dir.mkdir(parents=True, exist_ok=False)
-        output_cfg["run_dir"] = str(run_dir)
+        rollout_cfg["num_episodes"] = num_episodes
+        rollout_cfg["execute_steps"] = rollout_cfg.get("execute_steps", policy.n_action_steps)
+        rollout_cfg["max_env_steps"] = rollout_cfg.get("max_env_steps", 1000)
+        output_cfg.update(run_id=run_id, run_dir=str(run_dir), record_video=record_video, video_fps=video_fps)
         with (run_dir / "config_resolved.yaml").open("w", encoding="utf-8") as stream:
             yaml.safe_dump(config, stream, sort_keys=False, allow_unicode=True)
         evaluate_episodes(
