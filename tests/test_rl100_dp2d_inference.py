@@ -170,6 +170,15 @@ def test_policy_snapshot_rejects_incomplete_state_dict(tmp_path, contract, nativ
         load_inference_policy(path)
 
 
+def test_legacy_full_step_supports_raw_and_ema(tmp_path, contract, native_stubs):
+    path, raw, ema = _checkpoint(tmp_path, contract, role="training")
+    old_step = path.rename(tmp_path / "step_00000012.ckpt")
+    for weights, expected in (("raw", raw), ("ema", ema)):
+        loaded, _, _ = load_inference_policy(old_step, weights=weights)
+        for key, value in expected.state_dict().items():
+            torch.testing.assert_close(loaded.state_dict()[key], value)
+
+
 def test_best_rejects_ema(tmp_path, contract, native_stubs):
     path, _, _ = _checkpoint(tmp_path, contract)
     with pytest.raises(ValueError, match="EMA requires"):
