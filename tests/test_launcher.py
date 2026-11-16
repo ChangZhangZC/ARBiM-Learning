@@ -51,9 +51,21 @@ def test_noninteractive_launcher_delegates_to_eval(config_path, launched, capsys
 
 def test_full_interactive_menu_and_confirmation(config_path, launched, monkeypatch):
     answers = iter(["1", "1", str(config_path), "y"])
-    monkeypatch.setattr("builtins.input", lambda prompt: next(answers))
+    prompts = []
+
+    def fake_input(prompt):
+        prompts.append(prompt)
+        return next(answers)
+
+    monkeypatch.setattr("builtins.input", fake_input)
     assert launch.main([]) == 0
     assert len(launched) == 1
+    assert prompts == [
+        "Choice (default 1): ",
+        "Choice (default 1): ",
+        "Rollout YAML (default: configs/rollout/hinge_chest.yaml): ",
+        "Start evaluation? [y/N]: ",
+    ]
 
 
 def test_interactive_default_selection(config_path, launched, monkeypatch):
@@ -117,3 +129,13 @@ def test_ctrl_c_cancels_launcher(config_path, launched, monkeypatch):
     monkeypatch.setattr("builtins.input", interrupt)
     assert launch.main([]) == 130
     assert not launched
+
+
+def test_hinge_chest_gui_and_realtime_defaults():
+    yaml_path = Path(__file__).resolve().parents[1] / "configs/rollout/hinge_chest.yaml"
+    env = yaml.safe_load(yaml_path.read_text(encoding="utf-8"))["env"]
+    assert env["headless"] is False
+    assert env["realtime"] is True
+    assert env["async_control"] is True
+    assert env["relative_to"] == "none"
+    assert env["frequency"] == 30
