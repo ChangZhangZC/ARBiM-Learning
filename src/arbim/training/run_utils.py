@@ -130,8 +130,9 @@ def check_config(cfg: dict[str, Any]) -> None:
         raise ValueError("policy.horizon and policy.n_obs_steps must be positive integers.")
     if policy["n_obs_steps"] < 1 or policy["horizon"] < policy["n_obs_steps"]:
         raise ValueError("policy.horizon must be >= policy.n_obs_steps >= 1.")
-    if policy["n_action_steps"] != policy["horizon"] - policy["n_obs_steps"] + 1:
-        raise ValueError("policy.n_action_steps must equal horizon-n_obs_steps+1 for current V1.")
+    n_action_steps = policy.get("n_action_steps")
+    if type(n_action_steps) is not int or not 1 <= n_action_steps <= policy["horizon"] - policy["n_obs_steps"] + 1:
+        raise ValueError("policy.n_action_steps must be in [1, horizon-n_obs_steps+1].")
     seed = tr.get("seed")
     if type(seed) is not int or seed < 0:
         raise ValueError("training.seed must be nonnegative integer.")

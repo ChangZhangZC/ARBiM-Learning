@@ -573,14 +573,30 @@ def main() -> None:
     parser.add_argument("--config", type=Path,
                         help="YAML profile for a new run; optional on Resume.")
     parser.add_argument("--resume", type=Path,
-                        help="Existing run directory (loads checkpoints/last.ckpt).")
+                        help="Existing run directory or checkpoints/last.ckpt.")
+    parser.add_argument("--dataset-root", type=Path)
+    parser.add_argument("--output-root", type=Path)
+    parser.add_argument("--horizon", type=int)
+    parser.add_argument("--batch-size", type=int)
+    parser.add_argument("--max-steps", type=int)
+    parser.add_argument("--max-epochs", type=int)
     args = parser.parse_args()
+
+    overrides = {
+        ("dataset", "root"): args.dataset_root,
+        ("output", "root"): args.output_root,
+        ("policy", "horizon"): args.horizon,
+        ("training", "batch_size"): args.batch_size,
+        ("training", "max_steps"): args.max_steps,
+        ("training", "max_epochs"): args.max_epochs,
+    }
     if args.config is None and args.resume is None:
         parser.error("Either --config or --resume is required.")
+
+    # CLI Resume always wins over YAML. Without --config, use the saved run config.
     if args.config is not None:
         config_path = args.config
     else:
-        # Read original configuration before any dataset/model setup.
         run_dir = Path(args.resume).expanduser().resolve()
         if run_dir.is_file():
             if run_dir.name != "last.ckpt" or run_dir.parent.name != "checkpoints":
@@ -589,7 +605,31 @@ def main() -> None:
         config_path = run_dir / "config_resolved.yaml"
     with config_path.open(encoding="utf-8") as file:
         config = yaml.safe_load(file)
-    run(config, resume=args.resume)
+
+    checkpoint_cfg = config.get("checkpoint", {})
+    resume = args.resume
+    if resume is None and checkpoint_cfg.get("resume", False):
+        resume_path = checkpoint_cfg.get("resume_path")
+        if not resume_path:
+            parser.error("checkpoint.resume=true requires checkpoint.resume_path.")
+        resume = Path(resume_path)
+    if resume is not None:
+        # A strict Resume restores its original training/data/optimizer contract.
+        if any(value is not None for value in overrides.values()):
+            parser.error("Training overrides are not supported with Resume.")
+        if args.config is not None:
+            run_dir = Path(resume).expanduser().resolve()
+            if run_dir.is_file():
+                if run_dir.name != "last.ckpt" or run_dir.parent.name != "checkpoints":
+                    parser.error("--resume file must be checkpoints/last.ckpt")
+                run_dir = run_dir.parent.parent
+            with (run_dir / "config_resolved.yaml").open(encoding="utf-8") as file:
+                config = yaml.safe_load(file)
+    else:
+        for (section, key), value in overrides.items():
+            if value is not None:
+                config[section][key] = str(value) if isinstance(value, Path) else value
+    run(config, resume=resume)
 
 
 if __name__ == "__main__":
