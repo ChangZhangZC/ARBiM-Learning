@@ -103,9 +103,15 @@ def _checkpoint(tmp_path, contract, *, role="best_policy"):
     }
     if role == "best_policy":
         payload.update(selected_weights="raw", val_loss=0.3)
-    else:
+    elif role == "training":
         payload["ema_policy"] = ema.state_dict()
-    path = tmp_path / ("best.ckpt" if role == "best_policy" else "last.ckpt")
+    elif role == "policy_snapshot":
+        payload["selected_weights"] = "raw"
+    else:
+        raise ValueError(f"Unsupported test checkpoint role: {role}")
+    filenames = {"best_policy": "best.ckpt", "training": "last.ckpt",
+                 "policy_snapshot": "step_00000012.ckpt"}
+    path = tmp_path / filenames[role]
     torch.save(payload, path)
     return path, raw, ema
 
@@ -128,6 +134,40 @@ def test_training_checkpoint_ema_and_raw_selection(tmp_path, contract, native_st
         torch.testing.assert_close(loaded.linear.bias, expected.linear.bias)
         torch.testing.assert_close(loaded.normalizer.params_dict["action"]["scale"],
                                    expected.normalizer.params_dict["action"]["scale"])
+
+
+def test_policy_snapshot_strict_raw_load(tmp_path, contract, native_stubs):
+    path, raw, _ = _checkpoint(tmp_path, contract, role="policy_snapshot")
+    payload = torch.load(path, weights_only=True)
+    assert set(payload) == {
+        "format_version", "checkpoint_role", "policy",
+        "contract", "global_step", "selected_weights",
+    }
+    policy, spec, config = load_inference_policy(path, weights="raw")
+    assert spec == contract["dataset_spec"]
+    assert config["policy"]["n_action_steps"] == 4
+    for key, value in raw.state_dict().items():
+        torch.testing.assert_close(policy.state_dict()[key], value)
+
+
+def test_policy_snapshot_rejects_ema_and_invalid_selection(tmp_path, contract, native_stubs):
+    path, _, _ = _checkpoint(tmp_path, contract, role="policy_snapshot")
+    with pytest.raises(ValueError, match="EMA requires"):
+        load_inference_policy(path, weights="ema")
+    payload = torch.load(path, weights_only=True)
+    payload["selected_weights"] = "ema"
+    torch.save(payload, path)
+    with pytest.raises(ValueError, match="selected_weights"):
+        load_inference_policy(path)
+
+
+def test_policy_snapshot_rejects_incomplete_state_dict(tmp_path, contract, native_stubs):
+    path, _, _ = _checkpoint(tmp_path, contract, role="policy_snapshot")
+    payload = torch.load(path, weights_only=True)
+    del payload["policy"]["linear.bias"]
+    torch.save(payload, path)
+    with pytest.raises(RuntimeError, match="Missing key"):
+        load_inference_policy(path)
 
 
 def test_best_rejects_ema(tmp_path, contract, native_stubs):
