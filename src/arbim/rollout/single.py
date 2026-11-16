@@ -9,7 +9,7 @@ import argparse
 import json
 import time
 from collections import deque
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -29,6 +29,7 @@ def run_single_episode(
     max_env_steps: int = 1000,
     seed: int | None = None,
     deterministic: bool = True,
+    on_frame: Callable[[Mapping[str, Any], int], None] | None = None,
 ) -> dict[str, Any]:
     """Reset once, predict native unnormalized chunks, and step until stopped.
 
@@ -45,11 +46,15 @@ def run_single_episode(
         raise ValueError("seed must be a nonnegative integer or null.")
     if type(deterministic) is not bool:
         raise ValueError("deterministic must be boolean.")
+    if on_frame is not None and not callable(on_frame):
+        raise TypeError("on_frame must be callable or None.")
 
     keys = (spec["state_key"], *spec["camera_keys"])
     device = next(policy.parameters()).device
     started = time.perf_counter()
     observation, info = adapter.reset(seed=seed)
+    if on_frame is not None:
+        on_frame(observation, 0)
 
     def snapshot(frame: Mapping[str, Any]) -> dict[str, np.ndarray]:
         return {key: np.asarray(frame[key]).copy() for key in keys}
@@ -84,6 +89,8 @@ def run_single_episode(
             observation, reward, terminated, truncated, info = adapter.step(action)
             episode_steps += 1
             episode_return += float(reward)
+            if on_frame is not None:
+                on_frame(observation, episode_steps)
             history.append(snapshot(observation))
             success = bool(info["success"])
             final_stage = info.get("stage", final_stage)
