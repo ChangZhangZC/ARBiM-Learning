@@ -61,19 +61,33 @@ def test_full_interactive_menu_and_confirmation(config_path, launched, monkeypat
     assert launch.main([]) == 0
     assert len(launched) == 1
     assert prompts == [
-        "Choice (default 1): ",
-        "Choice (default 1): ",
-        "Rollout YAML (default: configs/rollout/hinge_chest.yaml): ",
+        "Choice: ",
+        "Choice: ",
+        "Rollout YAML: ",
         "Start evaluation? [y/N]: ",
     ]
 
 
-def test_interactive_default_selection(config_path, launched, monkeypatch):
-    monkeypatch.setattr(launch, "DEFAULT_CONFIG", config_path)
-    answers = iter(["", "", "", "yes"])
-    monkeypatch.setattr("builtins.input", lambda prompt: next(answers))
+def test_interactive_blank_inputs_require_explicit_selection(config_path, launched, monkeypatch, capsys):
+    answers = iter(["", "1", "", "1", "", str(config_path), "yes"])
+    prompts = []
+
+    def fake_input(prompt):
+        prompts.append(prompt)
+        return next(answers)
+
+    monkeypatch.setattr("builtins.input", fake_input)
     assert launch.main([]) == 0
     assert len(launched) == 1
+    assert prompts == [
+        "Choice: ", "Choice: ",
+        "Choice: ", "Choice: ",
+        "Rollout YAML: ", "Rollout YAML: ",
+        "Start evaluation? [y/N]: ",
+    ]
+    output = capsys.readouterr().out
+    assert output.count("Invalid choice: ''") == 2
+    assert "Please enter a YAML path." in output
 
 
 def test_cancel_does_not_start_eval(config_path, launched, monkeypatch):
