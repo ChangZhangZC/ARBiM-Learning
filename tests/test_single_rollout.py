@@ -25,6 +25,9 @@ class FakePolicy(torch.nn.Module):
         self.parameter = torch.nn.Parameter(torch.zeros(()))
         self.n_obs_steps = 2
         self.n_action_steps = 16
+        self.horizon = 17
+        self.no_pre_action = True
+        self.action_dim = 16
         self.inferences = []
 
     def predict_action(self, observation, *, deterministic=False):
