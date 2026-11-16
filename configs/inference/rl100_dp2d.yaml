@@ -3,7 +3,7 @@
 # Normalizer come exclusively from the checkpoint's saved contract.
 inference:
   checkpoint_path: null             # set here or via --checkpoint; best/last/step_*.ckpt
-  weights: raw                   # raw; ema requires last.ckpt
+  weights: raw                   # ema only for full training checkpoints (last/legacy step)
   device: cuda:0                 # cuda:0, cuda:1, cpu, ...
   deterministic: true            # true=native deterministic DDIM; false=stochastic
   n_action_steps: null           # null=checkpoint; optional output slice length (1..predicted steps)
