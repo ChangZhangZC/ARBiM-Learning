@@ -1,0 +1,7 @@
+# Task 5 Hinge-Chest rollout configuration placeholder; not runnable yet.
+# These sections are reserved for the environment, inference and evaluation
+# contracts. Populate and validate them during Task 5 implementation.
+env: {}
+policy: {}
+rollout: {}
+output: {}
