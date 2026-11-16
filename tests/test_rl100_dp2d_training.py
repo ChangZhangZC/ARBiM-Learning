@@ -7,7 +7,10 @@ import types
 import pytest
 import torch
 
-from arbim.training.train_rl100_dp2d import _validation_without_random_shifts, load_checkpoint, read_checkpoint, prepare_batch, save_checkpoint
+from arbim.training.train_rl100_dp2d import (
+    _checkpoint_periodic, _validation_without_random_shifts, load_checkpoint,
+    read_checkpoint, prepare_batch, save_checkpoint,
+)
 
 
 def test_prepare_batch_preserves_native_loss_contract():
@@ -175,3 +178,82 @@ def test_resume_rebuilds_optimizer_after_dynamic_native_normalizer_load(tmp_path
     stale.load_state_dict(payload["policy"], strict=True)
     with pytest.raises(ValueError, match="stale Policy parameters"):
         load_checkpoint(payload, stale, stale_opt, stale_sch, stale_ema, device=device)
+
+
+def test_periodic_snapshots_are_raw_only_and_last_remains_resumable(tmp_path):
+    policy = torch.nn.Linear(3, 2)
+    optimizer = torch.optim.AdamW(policy.parameters(), lr=0.01)
+    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lambda step: 1)
+    ema = types.SimpleNamespace(averaged_model=copy.deepcopy(policy),
+                                optimization_step=1, decay=0.9)
+    optimizer.zero_grad()
+    policy(torch.ones(2, 3)).square().mean().backward()
+    optimizer.step()
+    scheduler.step()
+    contract = {"total_steps": 10, "steps_per_epoch": 4}
+    cfg = {"checkpoint": {"keep_last": 2}}
+    checkpoint_dir = tmp_path / "checkpoints"
+
+    for step in (1, 2, 3):
+        _checkpoint_periodic(
+            tmp_path, cfg, step, policy, optimizer, scheduler, ema,
+            contract, best_loss=0.5, best_step=1,
+        )
+        last = read_checkpoint(checkpoint_dir / "last.ckpt", contract=contract)
+        snapshot_path = checkpoint_dir / f"step_{step:08d}.ckpt"
+        snapshot = torch.load(snapshot_path, weights_only=True)
+        assert last["checkpoint_role"] == "training"
+        assert {"optimizer", "lr_scheduler", "ema_policy", "rng"} <= set(last)
+        assert last["global_step"] == snapshot["global_step"] == step
+        assert snapshot["checkpoint_role"] == "policy_snapshot"
+        assert snapshot["selected_weights"] == "raw"
+        assert set(snapshot) == {
+            "format_version", "checkpoint_role", "policy",
+            "global_step", "contract", "selected_weights",
+        }
+        assert snapshot["contract"] == contract
+        for name in last["policy"]:
+            torch.testing.assert_close(last["policy"][name], snapshot["policy"][name])
+        assert snapshot_path.stat().st_ino != (checkpoint_dir / "last.ckpt").stat().st_ino
+        with pytest.raises(ValueError, match="resumable"):
+            read_checkpoint(snapshot_path, contract=contract)
+
+    assert not (checkpoint_dir / "step_00000001.ckpt").exists()
+    assert [p.name for p in sorted(checkpoint_dir.glob("step_*.ckpt"))] == [
+        "step_00000002.ckpt", "step_00000003.ckpt",
+    ]
+    previous_last = (checkpoint_dir / "last.ckpt").read_bytes()
+    with pytest.raises(FileExistsError, match="Refusing to overwrite"):
+        _checkpoint_periodic(
+            tmp_path, cfg, 3, policy, optimizer, scheduler, ema,
+            contract, best_loss=0.5, best_step=1,
+        )
+    assert (checkpoint_dir / "last.ckpt").read_bytes() == previous_last
+
+
+def test_snapshot_write_failure_keeps_last_resumable_and_no_partial_file(
+        tmp_path, monkeypatch):
+    policy = torch.nn.Linear(3, 2)
+    optimizer = torch.optim.AdamW(policy.parameters(), lr=0.01)
+    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lambda step: 1)
+    ema = types.SimpleNamespace(averaged_model=copy.deepcopy(policy),
+                                optimization_step=1, decay=0.9)
+    contract = {"total_steps": 10, "steps_per_epoch": 4}
+    cfg = {"checkpoint": {"keep_last": 2}}
+    original_save = torch.save
+
+    def failing_save(value, destination, *args, **kwargs):
+        if str(destination).endswith("step_00000001.ckpt.tmp"):
+            raise OSError("simulated snapshot write failure")
+        return original_save(value, destination, *args, **kwargs)
+
+    monkeypatch.setattr(torch, "save", failing_save)
+    with pytest.raises(OSError, match="simulated snapshot"):
+        _checkpoint_periodic(
+            tmp_path, cfg, 1, policy, optimizer, scheduler, ema,
+            contract, best_loss=None, best_step=None,
+        )
+    checkpoint_dir = tmp_path / "checkpoints"
+    assert read_checkpoint(checkpoint_dir / "last.ckpt", contract=contract)["global_step"] == 1
+    assert not (checkpoint_dir / "step_00000001.ckpt").exists()
+    assert not (checkpoint_dir / "step_00000001.ckpt.tmp").exists()
