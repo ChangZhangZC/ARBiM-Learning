@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -247,3 +248,30 @@ def test_cli_resolves_config_and_closes_environment(tmp_path, monkeypatch, spec,
     assert resolved["rollout"]["max_env_steps"] == 5
     assert resolved["output"]["video_fps"] == 30
     assert resolved["output"]["run_id"] == "test_run"
+
+
+@pytest.mark.skipif(os.environ.get("ARBIM_VIDEO_CODEC_SMOKE") != "1",
+                    reason="Set ARBIM_VIDEO_CODEC_SMOKE=1 to test the installed OpenCV MP4 codec.")
+def test_real_mp4_codec_writes_readable_three_view_video(tmp_path, camera_map):
+    cv2 = pytest.importorskip("cv2")
+    recorder = evaluation.EpisodeVideoRecorder(tmp_path / "episode_000", camera_map, 30)
+    try:
+        for step in range(3):
+            # Even-sized image supports mp4v encoder.
+            frame = {key: np.full((224, 224, 3), 20 + step, dtype=np.uint8)
+                     for key in camera_map}
+            recorder.write(frame, step)
+    finally:
+        recorder.close()
+    for camera in camera_map.values():
+        path = tmp_path / "episode_000" / f"{camera}.mp4"
+        assert path.exists() and path.stat().st_size > 0
+        reader = cv2.VideoCapture(str(path))
+        try:
+            assert reader.isOpened()
+            decoded = 0
+            while reader.read()[0]:
+                decoded += 1
+            assert decoded == 3
+        finally:
+            reader.release()
