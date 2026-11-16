@@ -277,34 +277,41 @@ def _save_best(path: Path, policy: Any, step: int, loss: float,
         temporary.unlink(missing_ok=True)
 
 
+def _save_policy_snapshot(path: Path, policy: Any, step: int,
+                          contract: dict[str, Any]) -> None:
+    """Atomically save an independently loadable raw-Policy-only step snapshot."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(path.name + ".tmp")
+    try:
+        torch.save({
+            "format_version": 2,
+            "checkpoint_role": "policy_snapshot",
+            "policy": policy.state_dict(),
+            "global_step": step,
+            "contract": contract,
+            "selected_weights": "raw",
+        }, temporary)
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
 def _checkpoint_periodic(run_dir: Path, cfg: dict[str, Any], step: int,
                          policy: Any, optimizer: Any, scheduler: Any, ema: Any,
                          contract: dict[str, Any], best_loss: float | None,
                          best_step: int | None) -> None:
-    """Always update last; keep at most N archived step snapshots."""
+    """Keep last fully resumable; retain at most N raw-Policy-only snapshots."""
     checkpoint_dir = run_dir / "checkpoints"
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    snapshot = checkpoint_dir / f"step_{step:08d}.ckpt"
+    if snapshot.exists() or snapshot.is_symlink():
+        raise FileExistsError(f"Refusing to overwrite existing step snapshot: {snapshot}")
     save_checkpoint(
         checkpoint_dir / "last.ckpt", policy, optimizer, scheduler, ema,
         global_step=step, contract=contract,
         best_val_loss=best_loss, best_step=best_step,
     )
-    # Snapshot is a hard link to the one atomic serialization, when supported.
-    # Each archived snapshot stays independent when last.ckpt is replaced.
-    import os
-    import shutil
-    snapshot = checkpoint_dir / f"step_{step:08d}.ckpt"
-    if snapshot.exists():
-        raise FileExistsError(f"Refusing to overwrite existing step snapshot: {snapshot}")
-    try:
-        os.link(checkpoint_dir / "last.ckpt", snapshot)
-    except OSError:
-        temporary = snapshot.with_name(snapshot.name + ".tmp")
-        try:
-            shutil.copy2(checkpoint_dir / "last.ckpt", temporary)
-            temporary.replace(snapshot)
-        finally:
-            temporary.unlink(missing_ok=True)
+    _save_policy_snapshot(snapshot, policy, step, contract)
     files = sorted(checkpoint_dir.glob("step_*.ckpt"))
     for old in files[:-cfg["checkpoint"]["keep_last"]]:
         old.unlink()
