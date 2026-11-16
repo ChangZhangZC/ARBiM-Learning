@@ -30,6 +30,7 @@ def launched(monkeypatch):
 
     def fake_run(command, **kwargs):
         calls.append((command, kwargs))
+        return subprocess.CompletedProcess(command, 0)
     monkeypatch.setattr(launch.subprocess, "run", fake_run)
     return calls
 
@@ -40,7 +41,7 @@ def test_noninteractive_launcher_delegates_to_eval(config_path, launched, capsys
     assert status == 0
     assert launched == [(
         [sys.executable, "-m", "arbim.rollout.eval", "--config", str(config_path.resolve())],
-        {"check": True},
+        {"check": False},
     )]
     output = capsys.readouterr().out
     assert "Parsed YAML preview" in output
@@ -103,13 +104,11 @@ def test_invalid_menu_choice_reprompts(config_path, launched, monkeypatch, capsy
     assert not launched
 
 
-def test_subprocess_failure_is_propagated(config_path, monkeypatch):
+def test_subprocess_exit_code_is_propagated(config_path, monkeypatch):
     def fail(command, **kwargs):
-        raise subprocess.CalledProcessError(3, command)
+        return subprocess.CompletedProcess(command, 3)
     monkeypatch.setattr(launch.subprocess, "run", fail)
-    with pytest.raises(subprocess.CalledProcessError) as exc:
-        launch.main(["--config", str(config_path), "--yes"])
-    assert exc.value.returncode == 3
+    assert launch.main(["--config", str(config_path), "--yes"]) == 3
 
 
 def test_ctrl_c_cancels_launcher(config_path, launched, monkeypatch):
