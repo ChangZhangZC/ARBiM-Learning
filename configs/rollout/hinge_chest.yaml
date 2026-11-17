@@ -39,8 +39,9 @@ rollout:
   num_episodes: 10               # CLI --episodes overrides
 
 output:
+  # Output path: outputs/eval/hinge_chest/<run_id>/
   root: outputs/eval
-  run_id: null                   # null=timestamp with microseconds; never overwrite runs
+  run_id: eval_{timestep}        # e.g. my_eval_{timestep}; null=timestamp only
 
   record_video: true             # CLI --no-video to disable
   video_source: native           # native=original RGB resolution; policy=224x224
