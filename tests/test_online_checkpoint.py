@@ -18,6 +18,8 @@ class FakePPO:
         self.kl_scheduler_actor = SimpleNamespace(current_lr=1e-4)
         self.kl_scheduler_critic = SimpleNamespace(current_lr=1e-3)
         self.iteration = 2
+        self._policy.n_action_steps = 1
+        self._policy.num_inference_steps = 10
         self.old_synced = False
 
     def set_old_policy(self):
@@ -49,6 +51,8 @@ def test_snapshot_matches_existing_inference_role(tmp_path):
     assert data["format_version"] == 2
     assert data["checkpoint_role"] == "policy_snapshot"
     assert data["selected_weights"] == "raw"
+    assert data["contract"]["policy"]["n_action_steps"] == 1
+    assert data["contract"]["policy"]["num_inference_steps"] == 10
 
 
 def test_checkpoint_rejects_wrong_resume_contract(tmp_path):

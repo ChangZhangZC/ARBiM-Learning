@@ -87,8 +87,13 @@ def save_inference_snapshot(
     path: str | Path, ppo: Any, *, il_contract: Mapping[str, Any], env_steps: int,
 ) -> None:
     """Existing ARBiM inference loader accepts policy_snapshot, format_version=2."""
+    contract = copy.deepcopy(dict(il_contract))
+    contract["policy"]["n_action_steps"] = int(ppo._policy.n_action_steps)
+    contract["policy"]["num_inference_steps"] = int(ppo._policy.num_inference_steps)
+    if "ddim_inference_steps" in contract["policy"]:
+        contract["policy"]["ddim_inference_steps"] = int(ppo._policy.num_inference_steps)
     _atomic_save(path, {
         "format_version": 2, "checkpoint_role": "policy_snapshot",
         "selected_weights": "raw", "policy": ppo._policy.state_dict(),
-        "global_step": int(env_steps), "contract": copy.deepcopy(dict(il_contract)),
+        "global_step": int(env_steps), "contract": contract,
     })

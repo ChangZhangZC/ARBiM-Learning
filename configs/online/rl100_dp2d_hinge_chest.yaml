@@ -59,7 +59,7 @@ reward:
   mode: env_raw          # only for end-to-end Smoke; not a validated scientific reward
 
 rollout:
-  max_env_steps: 1000     # MUST be a multiple of effective n_action_steps
+  max_env_steps: 992      # divisible by both common H=4 and H=16
   seed: 42
   max_updates: 1          # 1 for initial PPO Smoke; increase only after feature validation
 
@@ -67,7 +67,7 @@ evaluation:
   enabled: true
   every_updates: 1
   num_episodes: 2
-  max_env_steps: 1000
+  max_env_steps: 992
   record_video: false
   video_source: native    # native/policy
   video_fps: 30
