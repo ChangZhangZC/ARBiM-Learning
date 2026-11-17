@@ -33,6 +33,12 @@ your dataset, checkpoint, GPU, and output directories.
 python -m arbim.training.train_rl100_dp2d --config configs/il/rl100_dp2d.yaml
 ```
 
+Training outputs use `outputs/il/<task>/<method>/<run_name>/`.
+In `configs/il/rl100_dp2d.yaml`, the default `training.run_name: run_{timestep}`
+expands the launch time (e.g. `run_20261117_130000`).
+Use `my_experiment_{timestep}` for a custom label with a time suffix,
+or a fixed name without `{timestep}`.
+
 Resume an existing run using its `last.ckpt`:
 
 ```bash
@@ -67,6 +73,15 @@ and `output.video_source` (`native` for HD or `policy` for 224×224).
 Evaluation outputs go to `outputs/eval/hinge_chest/<run_id>/` and include
 `config_resolved.yaml`, `episodes.jsonl`, `summary.json`, and
 `episode_*/{head,left_wrist,right_wrist}.mp4`.
+The default `output.run_id: eval_{timestep}` can be renamed to, e.g.,
+`test_policy_{timestep}`. Eval timestamps include microseconds.
+
+For local TensorBoard, edit `path=` at the top of `scripts/tensorboard.sh`
+and launch from the repository root:
+
+```bash
+bash scripts/tensorboard.sh
+```
 
 ## Implementation
 

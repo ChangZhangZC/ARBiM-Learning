@@ -91,10 +91,10 @@ ema:
   max_value: 0.9999
 
 training:
-  # Run identifiers (output directory: output.root / task / method / run_name).
+  # Output path: outputs/il/<task>/<method>/<run_name>/
   task: duobench_transfer_cube # descriptive experiment label, NOT a dataset format
   method: rl100_dp2d
-  run_name: null # null = automatically generated YYYYMMDD_HHMMSS
+  run_name: run_{timestep} # e.g. my_run_{timestep}; timestep=YYYYMMDD_HHMMSS; null=timestamp only
 
   device: cuda:0
   seed: 42
@@ -109,7 +109,7 @@ training:
 
 output:
   root: outputs/il
-  output_dir: null # explicitly set a run path or use task/method/timestamp above
+  output_dir: null # explicit full run path overrides task/method/run_name
 
 checkpoint:
   enabled: true

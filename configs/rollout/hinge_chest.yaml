@@ -33,13 +33,15 @@ policy:
 rollout:
   execute_steps: 16              # each prediction executes up to this many steps
   max_env_steps: 1000            # set --max-env-steps 32 for initial smoke
+  post_success_steps: 5          # execute five additional policy actions after native success (0=upstream)
 
   seed: 42
   num_episodes: 10               # CLI --episodes overrides
 
 output:
+  # Output path: outputs/eval/hinge_chest/<run_id>/
   root: outputs/eval
-  run_id: null                   # null=timestamp with microseconds; never overwrite runs
+  run_id: eval_{timestep}        # e.g. my_eval_{timestep}; null=timestamp only
 
   record_video: true             # CLI --no-video to disable
   video_source: native           # native=original RGB resolution; policy=224x224

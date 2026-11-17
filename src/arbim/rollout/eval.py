@@ -101,6 +101,7 @@ def evaluate_episodes(
     camera_map: Mapping[str, str],
     execute_steps: int,
     max_env_steps: int,
+    post_success_steps: int = 0,
     seed: int | None = None,
     deterministic: bool = True,
     record_video: bool = True,
@@ -131,6 +132,8 @@ def evaluate_episodes(
         raise ValueError("execute_steps must be in [1, policy.n_action_steps].")
     if type(max_env_steps) is not int or max_env_steps < 1:
         raise ValueError("max_env_steps must be positive.")
+    if type(post_success_steps) is not int or post_success_steps < 0:
+        raise ValueError("post_success_steps must be a nonnegative integer.")
 
     folder = Path(output_dir)
     folder.mkdir(parents=True, exist_ok=True)
@@ -169,6 +172,7 @@ def evaluate_episodes(
                     adapter, policy, spec,
                     execute_steps=execute_steps,
                     max_env_steps=max_env_steps,
+                    post_success_steps=post_success_steps,
                     seed=episode_seed,
                     deterministic=deterministic,
                     on_frame=record_frame if recorder is not None else None,
@@ -203,6 +207,17 @@ def evaluate_episodes(
         stream.write("\n")
     print(json.dumps(summary, indent=2, ensure_ascii=False), flush=True)
     return summary
+
+
+def resolve_eval_run_id(template: str | None) -> str:
+    """Expand the optional launch-time {timestep} token."""
+    if template is not None and not isinstance(template, str):
+        raise ValueError("output.run_id must be a string or null.")
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    run_id = (template if template is not None else "{timestep}").replace("{timestep}", timestamp)
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", run_id):
+        raise ValueError("output.run_id must contain only letters, digits, underscore or hyphen.")
+    return run_id
 
 
 def main() -> None:
@@ -249,9 +264,7 @@ def main() -> None:
     video_fps = (env_cfg.get("frequency", 30) if output_cfg.get("video_fps") is None
                  else output_cfg["video_fps"])
     root = Path(output_cfg.get("root", "outputs/eval")).expanduser()
-    run_id = output_cfg.get("run_id") or datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-    if not isinstance(run_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]+", run_id):
-        raise ValueError("output.run_id must contain only letters, digits, underscore or hyphen.")
+    run_id = resolve_eval_run_id(output_cfg.get("run_id"))
     run_dir = root / "hinge_chest" / run_id
 
     policy, spec, _ = load_inference_policy(
@@ -271,6 +284,7 @@ def main() -> None:
         )
         # An existing run must never be silently overwritten.
         run_dir.mkdir(parents=True, exist_ok=False)
+        print(f"[EVAL] run={run_dir}", flush=True)
         rollout_cfg["num_episodes"] = num_episodes
         rollout_cfg["execute_steps"] = rollout_cfg.get("execute_steps", policy.n_action_steps)
         rollout_cfg["max_env_steps"] = rollout_cfg.get("max_env_steps", 1000)
@@ -285,6 +299,7 @@ def main() -> None:
             camera_map=env_cfg["camera_map"],
             execute_steps=rollout_cfg.get("execute_steps", policy.n_action_steps),
             max_env_steps=rollout_cfg.get("max_env_steps", 1000),
+            post_success_steps=rollout_cfg.get("post_success_steps", 0),
             seed=seed,
             deterministic=policy_cfg.get("deterministic", True),
             record_video=record_video,

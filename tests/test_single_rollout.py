@@ -153,3 +153,59 @@ def test_frame_callback_emits_reset_and_each_step(spec):
     )
     assert result["episode_steps"] == 3
     assert frames == [(0, 1000.0), (1, 1001.0), (2, 1002.0), (3, 1003.0)]
+
+
+def test_post_success_executes_five_more_steps_and_keeps_chunk_order(spec):
+    class NativeHingeAdapter(FakeAdapter):
+        def step(self, action):
+            obs, reward, _, _, info = super().step(action)
+            # DuoBench reports terminated=True and success=True at stage 3,
+            # and its stage is sticky for subsequent simulation steps.
+            success = self.tick >= 3
+            return obs, reward, success, False, {"success": success, "stage": 3 if success else self.tick}
+
+    adapter, policy = NativeHingeAdapter(spec), FakePolicy()
+    result = single.run_single_episode(
+        adapter, policy, spec, execute_steps=4,
+        max_env_steps=20, post_success_steps=5,
+    )
+    assert result["success"] is True
+    assert result["first_success_step"] == 3
+    assert result["post_success_steps_executed"] == 5
+    assert result["episode_steps"] == 8
+    assert result["stop_reason"] == "success"
+    assert [a[0] for a in adapter.actions] == [1, 2, 3, 4, 101, 102, 103, 104]
+    assert result["inference_count"] == 2
+
+
+def test_post_success_zero_preserves_native_behavior(spec):
+    adapter = FakeAdapter(spec, end_at=3)
+    result = single.run_single_episode(adapter, FakePolicy(), spec, post_success_steps=0)
+    assert result["episode_steps"] == 3
+    assert result["first_success_step"] == 3
+    assert result["post_success_steps_executed"] == 0
+
+
+def test_post_success_respects_max_steps(spec):
+    class NativeHingeAdapter(FakeAdapter):
+        def step(self, action):
+            obs, reward, _, _, info = super().step(action)
+            reached = self.tick >= 3
+            return obs, reward, reached, False, {"success": reached, "stage": 3 if reached else 0}
+
+    result = single.run_single_episode(
+        NativeHingeAdapter(spec), FakePolicy(), spec,
+        max_env_steps=5, post_success_steps=5,
+    )
+    assert result["episode_steps"] == 5
+    assert result["first_success_step"] == 3
+    assert result["post_success_steps_executed"] == 2
+    assert result["stop_reason"] == "max_env_steps"
+
+
+@pytest.mark.parametrize("invalid", [-1, True, 2.5, "5"])
+def test_invalid_post_success_steps_rejected(spec, invalid):
+    adapter = FakeAdapter(spec)
+    with pytest.raises(ValueError, match="post_success_steps"):
+        single.run_single_episode(adapter, FakePolicy(), spec, post_success_steps=invalid)
+    assert adapter.reset_count == 0
