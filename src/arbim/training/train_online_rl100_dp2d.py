@@ -50,7 +50,7 @@ def validate_config(cfg: Mapping[str, Any]) -> None:
     if cfg["reward"].get("mode") != "env_raw":
         raise ValueError("Task 6 V1 supports only native env_raw reward.")
     ppo = cfg["ppo"]
-    for key in ("batch_size", "mini_batch_size", "K_epochs", "value_hidden_dim", "value_depth", "max_train_steps"):
+    for key in ("max_updates", "batch_size", "mini_batch_size", "K_epochs", "value_hidden_dim", "value_depth"):
         if type(ppo.get(key)) is not int or ppo[key] < 1:
             raise ValueError(f"ppo.{key} must be a positive integer.")
     for key in ("actor_lr", "critic_lr", "min_lr_actor", "max_lr_actor", "min_lr_critic",
@@ -71,19 +71,19 @@ def validate_config(cfg: Mapping[str, Any]) -> None:
         raise ValueError("Task 6 V1 excludes distillation.")
     if any(ppo.get(k) for k in ("use_bc", "recon", "value_recon")):
         raise ValueError("Task 6 V1 excludes BC/reconstruction objectives.")
+    if type(cfg["env"].get("max_episode_steps")) is not int or cfg["env"]["max_episode_steps"] < 1:
+        raise ValueError("env.max_episode_steps must be a positive integer.")
+    if any(key in cfg["rollout"] for key in ("max_env_steps", "max_updates", "max_total_env_steps")):
+        raise ValueError("Legacy rollout budget keys are unsupported; use env.max_episode_steps and ppo.max_updates.")
+    if any(key in cfg["evaluation"] for key in ("max_env_steps",)):
+        raise ValueError("Use env.max_episode_steps; evaluation.max_env_steps is no longer supported.")
+    if "max_train_steps" in ppo:
+        raise ValueError("ppo.max_train_steps is hidden because linear_lr_decay is disabled.")
     rollout = cfg["rollout"]
-    if type(rollout.get("max_env_steps")) is not int or rollout["max_env_steps"] < 1:
-        raise ValueError("rollout.max_env_steps must be positive.")
-    for key in ("max_updates", "max_total_env_steps"):
-        value = rollout.get(key)
-        if value is not None and (type(value) is not int or value < 1):
-            raise ValueError(f"rollout.{key} must be positive or null.")
-    if rollout.get("max_updates") is None and rollout.get("max_total_env_steps") is None:
-        raise ValueError("Set rollout.max_updates and/or rollout.max_total_env_steps.")
     if type(rollout.get("seed")) is not int or rollout["seed"] < 0:
         raise ValueError("rollout.seed must be a nonnegative integer.")
     evaluation = cfg["evaluation"]
-    for key in ("every_updates", "num_episodes", "max_env_steps"):
+    for key in ("every_updates", "num_episodes"):
         if type(evaluation.get(key)) is not int or evaluation[key] < 1:
             raise ValueError(f"evaluation.{key} must be positive.")
     for key in ("enabled", "record_video"):
@@ -113,6 +113,42 @@ def validate_config(cfg: Mapping[str, Any]) -> None:
     ratio_freq = logging_cfg.get("ratio_diagnostics", {}).get("every_updates", 5)
     if type(ratio_freq) is not int or ratio_freq < 1:
         raise ValueError("logging.ratio_diagnostics.every_updates must be positive.")
+
+
+def normalize_online_config(config: Mapping[str, Any]) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    """Read old Task 6/7 YAML only for legacy Resume; emit the new canonical schema.
+
+    Do not reinterpret an old environment-step training budget as PPO updates.
+    """
+    cfg = copy.deepcopy(dict(config))
+    rollout = cfg["rollout"]
+    evaluation = cfg["evaluation"]
+    legacy = (
+        "max_env_steps" in rollout or "max_updates" in rollout
+        or "max_total_env_steps" in rollout or "max_env_steps" in evaluation
+        or "max_train_steps" in cfg["ppo"]
+    )
+    if not legacy:
+        return cfg, None
+    original = copy.deepcopy(cfg)
+    training_limit = rollout.pop("max_env_steps", None)
+    eval_limit = evaluation.pop("max_env_steps", None)
+    if training_limit is not None and eval_limit is not None and training_limit != eval_limit:
+        raise ValueError("Legacy rollout/evaluation episode limits differ; cannot unify silently.")
+    episode_limit = training_limit if training_limit is not None else eval_limit
+    if episode_limit is None and "max_episode_steps" not in cfg["env"]:
+        raise ValueError("Legacy run is missing an episode environment-step limit.")
+    if episode_limit is not None and cfg["env"].get("max_episode_steps", episode_limit) != episode_limit:
+        raise ValueError("Conflicting legacy and new episode-step limits.")
+    cfg["env"]["max_episode_steps"] = episode_limit or cfg["env"]["max_episode_steps"]
+    old_updates = rollout.pop("max_updates", None)
+    if old_updates is not None and cfg["ppo"].get("max_updates", old_updates) != old_updates:
+        raise ValueError("Conflicting old and new PPO update budgets.")
+    cfg["ppo"]["max_updates"] = cfg["ppo"].get("max_updates", old_updates)
+    if rollout.pop("max_total_env_steps", None) is not None:
+        raise ValueError("Legacy total environment-step budget cannot be mapped to PPO updates.")
+    cfg["ppo"].pop("max_train_steps", None)  # unused with linear_lr_decay=False
+    return cfg, original
 
 
 def _frozen_config(config: Mapping[str, Any]) -> dict[str, Any]:
@@ -168,14 +204,9 @@ def _write_run_meta(run_dir: Path, cfg: Mapping[str, Any], il_path: str) -> None
     )
 
 
-def _budget_reached(cfg: Mapping[str, Any], updates: int, env_steps: int) -> bool:
-    rollout = cfg["rollout"]
-    return bool(
-        (rollout.get("max_updates") is not None
-         and updates >= rollout["max_updates"])
-        or (rollout.get("max_total_env_steps") is not None
-            and env_steps >= rollout["max_total_env_steps"])
-    )
+def _budget_reached(cfg: Mapping[str, Any], updates: int) -> bool:
+    """Only completed PPO update cycles count toward the training budget."""
+    return updates >= int(cfg["ppo"]["max_updates"])
 
 
 def _mean_eval_stage(folder: Path) -> float | None:
@@ -189,14 +220,16 @@ def _mean_eval_stage(folder: Path) -> float | None:
     return sum(stages) / len(stages) if stages else None
 
 
-def run(config: dict[str, Any]) -> Path:
+def run(config: dict[str, Any], *, legacy_config: dict[str, Any] | None = None) -> Path:
     from arbim.envs.duobench import DuoBenchAdapter, create_duobench_env, validate_dataset_spec
     from arbim.rollout.eval import evaluate_episodes
     from arbim.training.train_rl100_dp2d import _seed_everything, _rng_state, _restore_rng
     from arbim.policy.inference_rl100_dp2d import seed_inference
 
-    validate_config(config)
-    cfg = copy.deepcopy(config)
+    cfg, inferred_legacy = normalize_online_config(config)
+    if legacy_config is None:
+        legacy_config = inferred_legacy
+    validate_config(cfg)
     il_path = str(Path(cfg["policy"]["checkpoint_path"]).expanduser().resolve())
     if not Path(il_path).is_file():
         raise FileNotFoundError(f"Validated Hinge-Chest IL checkpoint not found: {il_path}")
@@ -218,8 +251,8 @@ def run(config: dict[str, Any]) -> Path:
     )
     validate_online_policy(policy, cfg["ppo"]["ratio_mode"])
     span = policy.n_action_steps
-    if cfg["rollout"]["max_env_steps"] % span or cfg["evaluation"]["max_env_steps"] % span:
-        raise ValueError("Rollout/Evaluation max_env_steps must be divisible by effective n_action_steps.")
+    if cfg["env"]["max_episode_steps"] % span:
+        raise ValueError("env.max_episode_steps must be divisible by effective n_action_steps.")
     if cfg["ppo"]["mini_batch_size"] > cfg["ppo"]["batch_size"]:
         raise ValueError("PPO mini_batch_size > batch_size.")
     validate_dataset_spec(spec, cfg["env"]["camera_map"])
@@ -250,9 +283,13 @@ def run(config: dict[str, Any]) -> Path:
             meta = json.loads(meta_path.read_text(encoding="utf-8"))
             if meta.get("initial_il_sha256") and meta["initial_il_sha256"] != _file_sha256(il_path):
                 raise ValueError("Original IL checkpoint contents changed since Online run creation.")
-        payload = read_online_checkpoint(resume_path, config=frozen, original_checkpoint=il_path)
+        legacy_frozen = _frozen_config(legacy_config) if legacy_config is not None else None
+        payload = read_online_checkpoint(
+            resume_path, config=frozen, original_checkpoint=il_path,
+            legacy_config=legacy_frozen,
+        )
         updates, episodes, env_steps = restore_online_checkpoint(ppo, payload)
-        if _budget_reached(cfg, updates, env_steps):
+        if _budget_reached(cfg, updates):
             raise ValueError("Online run already reached its configured training budget.")
         previous_config = yaml.safe_load((run_dir / "config_resolved.yaml").read_text(encoding="utf-8"))
         if previous_config != frozen:
@@ -274,7 +311,7 @@ def run(config: dict[str, Any]) -> Path:
         _write_run_meta(run_dir, frozen, il_path)
         updates, episodes, env_steps = 0, 0, 0
 
-    if _budget_reached(cfg, updates, env_steps):
+    if _budget_reached(cfg, updates):
         raise ValueError("Online run already reached its configured training budget.")
 
     logging_settings = {
@@ -322,20 +359,20 @@ def run(config: dict[str, Any]) -> Path:
             binarize_state_gripper=cfg["env"].get("binarize_state_gripper", True),
             gripper_threshold=cfg["env"].get("gripper_threshold", 0.9),
         )
-        total_budget = cfg["rollout"].get("max_total_env_steps")
-        if (total_budget is not None and log_cfg.get("progress_bar", True)
-                and sys.stderr.isatty()):
+        total_budget = cfg["ppo"]["max_updates"]
+        if log_cfg.get("progress_bar", True) and sys.stderr.isatty():
             from tqdm import tqdm
-            progress = tqdm(total=total_budget, initial=min(env_steps, total_budget),
-                            desc="Online PPO", unit="env_step", dynamic_ncols=True)
-        while not _budget_reached(cfg, updates, env_steps):
+            progress = tqdm(total=total_budget, initial=updates,
+                            desc="PPO Updates", unit="update", dynamic_ncols=True)
+        while not _budget_reached(cfg, updates):
+            batch_rollouts = []
             while buffer.count < cfg["ppo"]["batch_size"]:
                 ppo._policy.eval()
                 start = time.perf_counter()
                 result = collect_online_episode(
                     adapter, ppo._policy, spec, buffer, evaluator,
                     gamma=float(cfg["ppo"]["gamma"]),
-                    max_env_steps=cfg["rollout"]["max_env_steps"],
+                    max_env_steps=cfg["env"]["max_episode_steps"],
                     seed=seed + episodes,
                 )
                 if result["transitions"] < 1:
@@ -367,8 +404,7 @@ def run(config: dict[str, Any]) -> Path:
                         },
                     },
                 )
-                if progress is not None:
-                    progress.update(min(result["episode_steps"], total_budget - progress.n))
+                batch_rollouts.append(result)
                 # Keep collecting complete episodes until the PPO batch is valid.
                 # Stopping early can produce a one-sample advantage/std NaN.
 
@@ -403,7 +439,9 @@ def run(config: dict[str, Any]) -> Path:
                     "diagnostics": ratio_metrics,
                 },
             )
-            finished = _budget_reached(cfg, updates, env_steps)
+            finished = _budget_reached(cfg, updates)
+            if progress is not None:
+                progress.update(1)
             checkpoint_cfg = cfg["checkpoint"]
             if (
                 updates % checkpoint_cfg["every_updates"] == 0
@@ -415,9 +453,10 @@ def run(config: dict[str, Any]) -> Path:
                     checkpoint_dir / "last.ckpt", ppo, config=frozen, updates=updates,
                     episode_count=episodes, env_steps=env_steps, original_checkpoint=il_path,
                 )
-                snapshot = checkpoint_dir / f"step_{env_steps:08d}.ckpt"
+                snapshot = checkpoint_dir / f"update_{updates:06d}.ckpt"
                 save_inference_snapshot(
-                    snapshot, ppo, il_contract=il_contract, env_steps=env_steps,
+                    snapshot, ppo, il_contract=il_contract,
+                    updates=updates, env_steps=env_steps, episodes=episodes,
                 )
                 prune_policy_snapshots(checkpoint_dir, checkpoint_cfg.get("keep_last", 3))
                 logger.event(
@@ -442,7 +481,7 @@ def run(config: dict[str, Any]) -> Path:
                         adapter, eval_policy, spec,
                         num_episodes=evaluation_cfg["num_episodes"], output_dir=folder,
                         camera_map=cfg["env"]["camera_map"], execute_steps=span,
-                        max_env_steps=evaluation_cfg["max_env_steps"], post_success_steps=0,
+                        max_env_steps=cfg["env"]["max_episode_steps"], post_success_steps=0,
                         seed=eval_seed, deterministic=True,
                         record_video=evaluation_cfg["record_video"],
                         video_fps=evaluation_cfg["video_fps"],
@@ -497,7 +536,6 @@ def main() -> None:
     parser.add_argument("--output-root", type=Path, help="Output root for a new run.")
     parser.add_argument("--run-name", help="New run directory name; supports {timestep}.")
     parser.add_argument("--max-updates", type=int, help="Override rollout.max_updates; allowed on V2 Resume.")
-    parser.add_argument("--max-total-env-steps", type=int, help="Override total environment-step budget.")
     parser.add_argument("--no-eval", action="store_true", help="Skip evaluation.")
     args = parser.parse_args()
     if args.resume is not None:
@@ -516,9 +554,10 @@ def main() -> None:
         resume_ckpt = None
         config_path = args.config or DEFAULT_CONFIG
     with config_path.expanduser().open(encoding="utf-8") as f:
-        config = yaml.safe_load(f)
-    if not isinstance(config, dict):
+        loaded = yaml.safe_load(f)
+    if not isinstance(loaded, dict):
         raise ValueError("Online YAML must be a mapping.")
+    config, legacy_source = normalize_online_config(loaded)
     if resume_ckpt is not None:
         config["checkpoint"]["resume"] = str(resume_ckpt)
     if args.checkpoint is not None:
@@ -530,12 +569,10 @@ def main() -> None:
     if args.run_name is not None:
         config["output"]["run_name"] = args.run_name
     if args.max_updates is not None:
-        config["rollout"]["max_updates"] = args.max_updates
-    if args.max_total_env_steps is not None:
-        config["rollout"]["max_total_env_steps"] = args.max_total_env_steps
+        config["ppo"]["max_updates"] = args.max_updates
     if args.no_eval:
         config["evaluation"]["enabled"] = False
-    run(config)
+    run(config, legacy_config=legacy_source)
 
 
 if __name__ == "__main__":
