@@ -178,3 +178,63 @@ def test_initial_il_checksum_is_content_sensitive(tmp_path):
     assert _file_sha256(path) == hashlib.sha256(b"original IL").hexdigest()
     path.write_bytes(b"changed IL")
     assert _file_sha256(path) != hashlib.sha256(b"original IL").hexdigest()
+
+
+def test_tensorboard_step_is_ppo_updates_not_environment_steps(tmp_path, monkeypatch):
+    import arbim.rl.online.telemetry as telemetry
+
+    seen = []
+
+    class FakeLogger:
+        def __init__(self, cfg, run_dir, *, resumed, resume_step):
+            seen.append(("init", resume_step, cfg["logging"]["tensorboard"]["log_dir"]))
+
+        def log(self, group, step, **metrics):
+            seen.append((group, step, metrics))
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(telemetry, "MetricLogger", FakeLogger)
+    logger = telemetry.OnlineTelemetry(
+        {"jsonl": False, "tensorboard": {"enabled": True}},
+        tmp_path, resumed=False, resume_updates=0, resume_env_steps=0,
+    )
+    logger.event(
+        "ppo", {"event": "ppo", "updates": 3, "episodes": 6, "env_steps": 5952},
+        summary="[PPO] update=3",
+        groups={
+            "ppo": {"actor_loss": 0.2},
+            "progress": {"env_steps": 5952, "ppo_updates": 3},
+        },
+    )
+    logger.close()
+    assert ("ppo", 3, {"actor_loss": 0.2}) in seen
+    assert ("progress", 3, {"env_steps": 5952, "ppo_updates": 3}) in seen
+    assert seen[0][1] == 0
+    assert seen[0][2].endswith("/tensorboard")
+
+
+def test_legacy_resume_preserves_old_tensorboard_event_axis(tmp_path, monkeypatch):
+    import arbim.rl.online.telemetry as telemetry
+
+    observed = {}
+
+    class FakeLogger:
+        def __init__(self, cfg, run_dir, *, resumed, resume_step):
+            observed["tb"] = cfg["logging"]["tensorboard"]["log_dir"]
+            observed["purge"] = resume_step
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(telemetry, "MetricLogger", FakeLogger)
+    (tmp_path / "tensorboard").mkdir()
+    sink = telemetry.OnlineTelemetry(
+        {"jsonl": True, "tensorboard": {"enabled": True}},
+        tmp_path, resumed=True, resume_updates=2, resume_env_steps=3968,
+        migrate_legacy_tb=True,
+    )
+    sink.close()
+    assert observed["purge"] == 2
+    assert observed["tb"].endswith("tensorboard_ppo_updates")
