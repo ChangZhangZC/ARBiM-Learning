@@ -23,7 +23,7 @@ class MetricLogger:
             if tb_cfg["enabled"]:
                 from torch.utils.tensorboard import SummaryWriter
                 options = {"purge_step": resume_step + 1} if resumed else {}
-                self.tb = SummaryWriter(log_dir=str(run_dir / "tensorboard"), **options)
+                self.tb = SummaryWriter(log_dir=str(tb_cfg.get("log_dir") or run_dir / "tensorboard"), **options)
             if wb_cfg["enabled"]:
                 import wandb
                 id_path = run_dir / "wandb_run_id.txt"

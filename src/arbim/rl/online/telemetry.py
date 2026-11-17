@@ -81,6 +81,7 @@ class OnlineTelemetry:
     def __init__(
         self, cfg: Mapping[str, Any], run_dir: Path, *,
         resumed: bool, resume_updates: int, resume_env_steps: int,
+        migrate_legacy_tb: bool = False,
     ) -> None:
         self.run_dir = run_dir
         self.metrics = run_dir / "metrics.jsonl"
@@ -94,15 +95,24 @@ class OnlineTelemetry:
                 run_dir / "diagnostics" / "ratio_stats.csv",
                 updates=resume_updates, env_steps=resume_env_steps,
             )
+        # Legacy Task 7 events use env_steps as their TensorBoard x-axis.
+        # Never silently mix them with PPO-update indexed events.
+        tb_dir = (
+            run_dir / "tensorboard_ppo_updates"
+            if migrate_legacy_tb or (run_dir / "tensorboard_ppo_updates").exists()
+            else run_dir / "tensorboard"
+        )
+        tb_cfg = dict(cfg["tensorboard"])
+        tb_cfg["log_dir"] = str(tb_dir)
         logging_cfg = {
             "logging": {
                 "jsonl": False,
-                "tensorboard": dict(cfg["tensorboard"]),
+                "tensorboard": tb_cfg,
                 "wandb": {"enabled": False},
             }
         }
         self.sink = MetricLogger(
-            logging_cfg, run_dir, resumed=resumed, resume_step=resume_env_steps
+            logging_cfg, run_dir, resumed=resumed, resume_step=resume_updates
         )
         if resumed:
             self.message(f"[RESUME] update={resume_updates} env_steps={resume_env_steps}")
@@ -120,7 +130,7 @@ class OnlineTelemetry:
             with self.metrics.open("a", encoding="utf-8") as out:
                 out.write(json.dumps(dict(record), ensure_ascii=False, allow_nan=False) + "\n")
         if groups:
-            step = int(record["env_steps"])
+            step = int(record["updates"])  # primary Online training axis is PPO updates
             for group, values in groups.items():
                 scalars = {
                     name: value for name, value in values.items()

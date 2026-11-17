@@ -12,7 +12,8 @@ from arbim.rl.online.telemetry import (
     reconcile_online_metrics, reconcile_native_ratio_csv, native_ratio_summary,
 )
 from arbim.training.train_online_rl100_dp2d import (
-    _budget_reached, _new_run_dir, _frozen_config, _file_sha256, validate_config,
+    _budget_reached, _new_run_dir, _frozen_config, _file_sha256,
+    normalize_online_config, validate_config,
 )
 
 
@@ -25,21 +26,53 @@ def profile():
     return cfg
 
 
-def test_total_budget_terminates_at_complete_update_boundary():
+def test_ppo_updates_are_the_only_training_budget():
     cfg = profile()
-    cfg["rollout"].update(max_updates=None, max_total_env_steps=10000)
+    cfg["ppo"]["max_updates"] = 10000
     validate_config(cfg)
-    assert not _budget_reached(cfg, updates=10, env_steps=9920)
-    assert _budget_reached(cfg, updates=11, env_steps=10912)
-    cfg["rollout"].update(max_updates=9)
-    assert _budget_reached(cfg, updates=9, env_steps=8928)
+    assert not _budget_reached(cfg, updates=9999)
+    assert _budget_reached(cfg, updates=10000)
+    # Total environmental interactions and Eval steps do not affect stopping.
+    cfg["env"]["max_episode_steps"] = 992
+    cfg["evaluation"]["every_updates"] = 50
+    assert not _budget_reached(cfg, updates=9999)
 
 
-def test_budget_requires_at_least_one_limit():
+def test_ppo_budget_requires_positive_updates():
     cfg = profile()
-    cfg["rollout"].update(max_updates=None, max_total_env_steps=None)
-    with pytest.raises(ValueError, match="max_updates"):
+    cfg["ppo"]["max_updates"] = None
+    with pytest.raises(ValueError, match="ppo.max_updates"):
         validate_config(cfg)
+
+
+def test_episode_limit_is_unified_and_old_budgets_are_rejected():
+    cfg = profile()
+    cfg["env"]["max_episode_steps"] = 992
+    validate_config(cfg)
+    cfg["env"]["max_episode_steps"] = 0
+    with pytest.raises(ValueError, match="env.max_episode_steps"):
+        validate_config(cfg)
+
+
+def test_old_run_yaml_can_be_migrated_without_changing_episode_limit():
+    cfg = profile()
+    old = copy.deepcopy(cfg)
+    cap = old["env"].pop("max_episode_steps")
+    old["rollout"].update(max_env_steps=cap, max_updates=old["ppo"].pop("max_updates"),
+                          max_total_env_steps=None)
+    old["evaluation"]["max_env_steps"] = cap
+    old["ppo"]["max_train_steps"] = 100000
+    normalized, original = normalize_online_config(old)
+    assert normalized == cfg
+    assert original == old
+    validate_config(normalized)
+    old["evaluation"]["max_env_steps"] += 32
+    with pytest.raises(ValueError, match="episode limits differ"):
+        normalize_online_config(old)
+    old["evaluation"]["max_env_steps"] = cap
+    old["rollout"]["max_total_env_steps"] = 10000
+    with pytest.raises(ValueError, match="cannot be mapped"):
+        normalize_online_config(old)
 
 
 def test_run_name_template_and_non_overwrite(tmp_path):
@@ -145,3 +178,63 @@ def test_initial_il_checksum_is_content_sensitive(tmp_path):
     assert _file_sha256(path) == hashlib.sha256(b"original IL").hexdigest()
     path.write_bytes(b"changed IL")
     assert _file_sha256(path) != hashlib.sha256(b"original IL").hexdigest()
+
+
+def test_tensorboard_step_is_ppo_updates_not_environment_steps(tmp_path, monkeypatch):
+    import arbim.rl.online.telemetry as telemetry
+
+    seen = []
+
+    class FakeLogger:
+        def __init__(self, cfg, run_dir, *, resumed, resume_step):
+            seen.append(("init", resume_step, cfg["logging"]["tensorboard"]["log_dir"]))
+
+        def log(self, group, step, **metrics):
+            seen.append((group, step, metrics))
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(telemetry, "MetricLogger", FakeLogger)
+    logger = telemetry.OnlineTelemetry(
+        {"jsonl": False, "tensorboard": {"enabled": True}},
+        tmp_path, resumed=False, resume_updates=0, resume_env_steps=0,
+    )
+    logger.event(
+        "ppo", {"event": "ppo", "updates": 3, "episodes": 6, "env_steps": 5952},
+        summary="[PPO] update=3",
+        groups={
+            "ppo": {"actor_loss": 0.2},
+            "progress": {"env_steps": 5952, "ppo_updates": 3},
+        },
+    )
+    logger.close()
+    assert ("ppo", 3, {"actor_loss": 0.2}) in seen
+    assert ("progress", 3, {"env_steps": 5952, "ppo_updates": 3}) in seen
+    assert seen[0][1] == 0
+    assert seen[0][2].endswith("/tensorboard")
+
+
+def test_legacy_resume_preserves_old_tensorboard_event_axis(tmp_path, monkeypatch):
+    import arbim.rl.online.telemetry as telemetry
+
+    observed = {}
+
+    class FakeLogger:
+        def __init__(self, cfg, run_dir, *, resumed, resume_step):
+            observed["tb"] = cfg["logging"]["tensorboard"]["log_dir"]
+            observed["purge"] = resume_step
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(telemetry, "MetricLogger", FakeLogger)
+    (tmp_path / "tensorboard").mkdir()
+    sink = telemetry.OnlineTelemetry(
+        {"jsonl": True, "tensorboard": {"enabled": True}},
+        tmp_path, resumed=True, resume_updates=2, resume_env_steps=3968,
+        migrate_legacy_tb=True,
+    )
+    sink.close()
+    assert observed["purge"] == 2
+    assert observed["tb"].endswith("tensorboard_ppo_updates")

@@ -7,7 +7,7 @@ collect on-policy DuoBench trajectories, and optimize with the pinned native
 `BehaviorProximalPolicyOptimization.dp_align_update_no_share()`.
 
 Task 7 adds run management, local TensorBoard, compact console summaries, a
-real total environment-step budget and strict resumable checkpoints. It does
+an explicit PPO-update training budget and strict resumable checkpoints. It does
 **not** add offline IQL, dynamics, distillation, BC/reconstruction loss, DDP,
 asymmetric updates, or persistent online trajectory datasets. The native PPO
 mathematics and diffusion sampler are not modified.
@@ -37,16 +37,24 @@ python -u -m arbim.training.train_online_rl100_dp2d \
   --checkpoint /absolute/path/to/validated/Hinge-Chest/last.ckpt
 ```
 
-For a longer run, copy the YAML into a separate experiment-specific YAML and set:
+For a longer run, copy the YAML into an experiment-specific profile:
 
 ```yaml
+env:
+  max_episode_steps: 992  # same cap for training rollout and evaluation episodes
+ppo:
+  max_updates: 10000     # 10000 complete PPO update cycles, NOT environment steps
+  batch_size: 32         # minimum transitions (action chunks) per update
+  mini_batch_size: 8
+  K_epochs: 2            # minibatch passes inside EACH PPO update
 rollout:
-  max_env_steps: 992       # per-episode cap, divisible by effective n_action_steps
-  max_total_env_steps: 10000
-  max_updates: null
+  seed: 42
 evaluation:
-  seed: 100042            # same initial states across checkpoints
+  every_updates: 50
+  seed: 100042           # fixed seeds across checkpoint comparisons
   num_episodes: 10
+checkpoint:
+  every_updates: 50
 ```
 
 A more concise CLI override is also supported:
@@ -55,15 +63,22 @@ A more concise CLI override is also supported:
 python -u -m arbim.training.train_online_rl100_dp2d \
   --config configs/online/rl100_dp2d_hinge_chest.yaml \
   --checkpoint /absolute/path/to/validated/last.ckpt \
-  --max-total-env-steps 10000 \
-  --max-updates 1000 \
+  --max-updates 10000 \
   --run-name 'run_{timestep}'
 ```
 
-When both limits are set, whichever is reached first stops the experiment
-*after a complete PPO update*. At a total step budget of 10,000 with 992-step
-episodes, the actual step counter may exceed 10,000. This preserves complete
-chunks and native GAE semantics.
+`ppo.max_updates` is the sole stopping budget. Each PPO update collects whole
+training episodes until the buffer contains at least `ppo.batch_size` action-
+chunk transitions, then runs `ppo.K_epochs` minibatch passes. The actual
+number of environmental interactions is recorded separately as `env_steps`;
+independent evaluation episodes do NOT contribute to this counter.
+
+For example, with `max_episode_steps=992`, `n_action_steps=32`,
+`batch_size=32` and no early success, 31 transitions are collected per
+episode, requiring two episodes per PPO update: 1,984 environment steps for
+one PPO update. A 10,000-update run can therefore consume approximately
+19.84 million training environment steps; it is NOT a 10,000-step rollout.
+The default YAML intentionally still limits new smoke runs to one update.
 
 `policy.n_action_steps: null` and `policy.num_inference_steps: null` preserve
 the validated IL checkpoint settings. Full chunk V1 uses
@@ -81,12 +96,13 @@ outputs/online/hinge_chest/run_YYYYMMDD_HHMMSS/
   metrics.jsonl             # structured rollout/ppo/evaluation/checkpoint events
   metrics.uncommitted.jsonl # optional archived events newer than last durable update
   train.log                 # compact ARBiM terminal summaries
-  tensorboard/              # local scalar event files, when enabled
+  tensorboard/              # PPO-update indexed scalar events (new runs)
+  tensorboard_ppo_updates/  # only when migrating an old env-step indexed run
   diagnostics/ratio_stats.csv # append-only native ratio data, when enabled
   diagnostics/ratio.uncommitted.csv # optional archived uncommitted ratio rows
   checkpoints/
     last.ckpt               # actor, critic, optimizers, adaptive LR, RNG, counters
-    step_XXXXXXXX.ckpt      # policy + inference contract, directly eval-able
+    update_000001.ckpt      # policy snapshot + inference contract, directly eval-able
   evaluation/
     update_000001/
       episodes.jsonl
@@ -102,10 +118,12 @@ instead of a duplicate full YAML; V1 smoke checkpoints remain readable with
 their original strict full-config contract.
 
 Policy snapshots preserve the existing ARBiM version-2 inference format
-(Policy including its Normalizer plus the minimum existing inference contract),
-not the full online optimizer state. `checkpoint.keep_last` prunes only older
-`step_*.ckpt` snapshots within that run; `last.ckpt` and the source IL
-checkpoint are never removed. No automatic `best.ckpt` exists: use fixed-seed
+(Policy including its Normalizer plus the existing inference contract), not
+the full online optimizer state. The snapshot's `global_step` now denotes
+completed **PPO updates**, and `env_steps` / `episodes` are separate metadata.
+Existing `step_*.ckpt` files from old runs are not renamed, and the
+snapshot-retention helper recognizes both old and new filenames.
+`checkpoint.keep_last` never removes `last.ckpt` or the source IL checkpoint. No automatic `best.ckpt` exists: use fixed-seed
 evaluation first before defining a statistically meaningful selection rule.
 
 ## Resume and interrupt behavior
@@ -115,10 +133,9 @@ python -u -m arbim.training.train_online_rl100_dp2d \
   --resume outputs/online/hinge_chest/run_YYYYMMDD_HHMMSS
 ```
 
-This automatically loads the run's `config_resolved.yaml` and its
-`checkpoints/last.ckpt`. You may use `--max-updates` or
-`--max-total-env-steps` to **extend** a V2 run's budget, or `--device` to
-move it to a different available CUDA device. Algorithm/environment parameters
+This automatically loads the run's `config_resolved.yaml` and
+`checkpoints/last.ckpt`. You can extend a V2 run using `--max-updates` or
+move it to another available CUDA device with `--device`. Algorithm/environment parameters
 remain strict; changing reward, PPO hyperparameters or rollout seed requires a
 new run. V1 checkpoints require their original *complete* configuration,
 including the budget.
@@ -145,15 +162,21 @@ tensorboard --logdir outputs/online --host 127.0.0.1 --port 6006
 
 Use SSH port forwarding when accessing from another computer rather than
 publicly exposing the service. The local TensorBoard sink reuses the IL
-`MetricLogger`; metrics retain event-based JSONL separately.
+`MetricLogger`; metrics retain event-based JSONL separately. An old pre-schema
+run's TensorBoard files are kept unchanged, while new PPO-update-indexed
+events from its Resume go into `tensorboard_ppo_updates/`.
 
-Primary TensorBoard x-axis is cumulative `env_steps`:
+All TensorBoard scalar groups use completed **PPO update count** as their
+x-axis. Training Rollout episode-level records remain in `metrics.jsonl`;
+`rollout/` curves are the **mean over episodes collected for each update**,
+not one point per episode. This keeps Resume/purge semantics well defined.
 
-- `rollout/`: reward/return, stage, success, episode steps, transitions
+- `rollout/`: mean return, success rate, stage, episode length, transitions
 - `ppo/`: actor and critic losses
 - `lr/`: actual actor/critic optimizer learning rates
 - `eval/`: success rate, mean return/steps/stage with a fixed seed set
-- `system/`: rollout and update/evaluation times, steps per second
+- `progress/`: PPO update count, total train env steps and total episodes
+- `system/`: rollout and update/evaluation times, train env steps per second
 - `diagnostics/`: upstream native ratio quantile/mean and logprob delta
 
 The pinned native PPO code exposes detailed ratio diagnostics optionally.
@@ -185,3 +208,26 @@ Neither GitHub-source review nor CPU-only tests substitute for these GPU/
 DuoBench validation steps. See
 [rl100_dp2d_online_contract.md](rl100_dp2d_online_contract.md) for native
 shape/ratio boundaries.
+
+## Terminology and old-run compatibility
+
+- `ppo.max_updates`: total number of **complete PPO update cycles**; 10,000
+  here means exactly 10,000 PPO updates, barring manual interrupt.
+- `ppo.K_epochs`: repeated optimization passes over one collected on-policy
+  buffer, not the number of episodes or PPO update cycles.
+- `env.max_episode_steps`: common per-episode cap used by training rollout
+  and evaluation; it must be divisible by the effective action chunk size.
+- `evaluation.every_updates` / `checkpoint.every_updates`: frequency in PPO
+  updates, not environment steps. Evaluation interactions are excluded from
+  training `env_steps`.
+- `rollout.seed`: training episode seed; independent Eval uses its own seed.
+- `ppo.max_train_steps` was only passed to native linear LR decay, disabled
+  by this V1 bridge, so it is no longer exposed in the YAML. The unused native
+  argument is supplied internally without changing its default behavior.
+- Old Task 7 `last.ckpt` V1/V2 Resume remains supported if its saved YAML had
+  identical training/evaluation episode caps and no active environment-step
+  training budget. A legacy run with differing caps or a non-null
+  `rollout.max_total_env_steps` is rejected instead of silently changing
+  semantics. Reorganized config is written after a successful new checkpoint.
+- Legacy `step_XXXXXXXX.ckpt` filenames encoded environmental interactions,
+  not PPO update count. They remain loadable as policy snapshots.

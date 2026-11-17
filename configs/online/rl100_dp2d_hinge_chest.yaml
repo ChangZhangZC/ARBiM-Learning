@@ -13,6 +13,7 @@ env:
   binary_gripper: true
   binarize_state_gripper: true
   gripper_threshold: 0.9
+  max_episode_steps: 992  # common training/evaluation episode cap; divisible by action chunk
   camera_map:
     observation.images.head: head
     observation.images.left_wrist: left_wrist
@@ -27,6 +28,7 @@ policy:
   num_inference_steps: null
 
 ppo:
+  max_updates: 1       # total PPO update cycles; set 10000 for a full run
   ratio_mode: chunk_joint # chunk_joint; per_action_step ONLY if n_action_steps=1
   batch_size: 32          # approximate transitions per update; finish each episode first
   mini_batch_size: 8
@@ -48,30 +50,24 @@ ppo:
   max_lr_actor: 0.0001
   min_lr_critic: 0.000001
   max_lr_critic: 0.001
-  max_train_steps: 100000
-
 reward:
   mode: env_raw          # only for end-to-end Smoke; not a validated scientific reward
 
 rollout:
-  max_env_steps: 992      # divisible by both common H=4 and H=16
-  seed: 42
-  max_updates: 1          # safe smoke-test default; null disables update limit
-  max_total_env_steps: null # total interaction budget, e.g. 10000; stops at update boundary
+  seed: 42              # seeds for on-policy training episodes
 
 evaluation:
   enabled: true
   every_updates: 1
   num_episodes: 2
   seed: 100042          # constant across all evaluations for comparable curves
-  max_env_steps: 992
   record_video: false
   video_source: native    # native/policy
   video_fps: 30
 
 checkpoint:
   every_updates: 1
-  keep_last: 3           # policy-only step_*.ckpt; last.ckpt always retained
+  keep_last: 3           # policy-only update_*.ckpt; last.ckpt always retained
   save_on_finish: true
   resume: null           # prefer --resume <run_dir> CLI
 logging:
