@@ -1,0 +1,80 @@
+# Task 6 V1 Online PPO. Set policy.checkpoint_path to a VERIFIED Hinge-Chest IL model.
+# No upstream code is edited. Offline RL/IQL, CM, DDP and asymmetric RL are excluded.
+env:
+  backend: duobench
+  task: hinge_chest
+  headless: true
+  control_mode: joints
+  relative_to: none
+  frequency: 30
+  camera_resolution: null
+  realtime: false
+  async_control: true
+  binary_gripper: true
+  binarize_state_gripper: true
+  gripper_threshold: 0.9
+  camera_map:
+    observation.images.head: head
+    observation.images.left_wrist: left_wrist
+    observation.images.right_wrist: right_wrist
+
+policy:
+  checkpoint_path: null  # required path to validated Hinge-Chest best.ckpt/last.ckpt
+  weights: raw
+  device: cuda:0
+  # null preserves the exact IL checkpoint's action span and denoising schedule
+  n_action_steps: null    # 1 for native single-step Online PPO
+  num_inference_steps: null
+
+ppo:
+  ratio_mode: chunk_joint # chunk_joint; per_action_step ONLY if n_action_steps=1
+  batch_size: 32          # approximate transitions per update; finish each episode first
+  mini_batch_size: 8
+  K_epochs: 2
+  epsilon: 0.2
+  gamma: 0.99
+  gae_lambda: 0.95
+  actor_lr: 0.00001
+  critic_lr: 0.0001
+  value_hidden_dim: 256
+  value_depth: 3
+  fix_encoder: true
+  share_encoder: true
+  use_bc: false
+  value_recon: false
+  recon: false
+  advantage_normalize: true
+  clip_value: false
+  linear_lr_decay: false
+  adaptive_kl: 0.02
+  min_lr_actor: 0.0000001
+  max_lr_actor: 0.0001
+  min_lr_critic: 0.000001
+  max_lr_critic: 0.001
+  max_train_steps: 100000
+  distill_phase: "off"
+  enable_ratio_logging: false
+
+reward:
+  mode: env_raw          # only for end-to-end Smoke; not a validated scientific reward
+
+rollout:
+  max_env_steps: 1000     # MUST be a multiple of effective n_action_steps
+  seed: 42
+  max_updates: 1          # 1 for initial PPO Smoke; increase only after feature validation
+
+evaluation:
+  enabled: true
+  every_updates: 1
+  num_episodes: 2
+  max_env_steps: 1000
+  record_video: false
+  video_source: native    # native/policy
+  video_fps: 30
+
+checkpoint:
+  every_updates: 1
+  resume: null            # path to checkpoints/last.ckpt in the SAME online run
+output:
+  root: outputs/online
+  run_name: null          # null = auto UTC timestamp + microseconds
