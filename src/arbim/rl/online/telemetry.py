@@ -42,6 +42,41 @@ def reconcile_online_metrics(path: Path, *, updates: int, env_steps: int) -> Non
     path.write_text("\n".join(kept) + ("\n" if kept else ""), encoding="utf-8")
 
 
+
+def reconcile_native_ratio_csv(
+    path: Path, *, updates: int, env_steps: int,
+) -> None:
+    """Archive ratio statistics belonging to updates newer than the checkpoint."""
+    if not path.is_file():
+        return
+    with path.open(newline="", encoding="utf-8") as stream:
+        reader = csv.DictReader(stream)
+        fieldnames = reader.fieldnames
+        if not fieldnames:
+            return
+        rows = list(reader)
+    kept = [
+        row for row in rows
+        if int(row["update"]) <= updates and int(row["env_steps"]) <= env_steps
+    ]
+    discarded = [
+        row for row in rows
+        if int(row["update"]) > updates or int(row["env_steps"]) > env_steps
+    ]
+    if not discarded:
+        return
+    archive = path.with_name("ratio.uncommitted.csv")
+    with archive.open("a", newline="", encoding="utf-8") as stream:
+        writer = csv.DictWriter(stream, fieldnames=fieldnames)
+        if stream.tell() == 0:
+            writer.writeheader()
+        writer.writerows(discarded)
+    with path.open("w", newline="", encoding="utf-8") as stream:
+        writer = csv.DictWriter(stream, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(kept)
+
+
 class OnlineTelemetry:
     def __init__(
         self, cfg: Mapping[str, Any], run_dir: Path, *,
@@ -54,6 +89,10 @@ class OnlineTelemetry:
         if resumed:
             reconcile_online_metrics(
                 self.metrics, updates=resume_updates, env_steps=resume_env_steps
+            )
+            reconcile_native_ratio_csv(
+                run_dir / "diagnostics" / "ratio_stats.csv",
+                updates=resume_updates, env_steps=resume_env_steps,
             )
         logging_cfg = {
             "logging": {
