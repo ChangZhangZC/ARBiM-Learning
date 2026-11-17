@@ -9,7 +9,6 @@ import copy
 import hashlib
 import json
 import os
-import re
 import tempfile
 from pathlib import Path
 from typing import Any, Mapping
@@ -197,12 +196,12 @@ def prune_policy_snapshots(folder: str | Path, keep_last: int) -> None:
     # Treat legacy files as earlier than newly created update snapshots.
     legacy = sorted(
         (p for p in directory.glob("step_*.ckpt")
-         if re.fullmatch(r"step_\\d+\\.ckpt", p.name)),
+         if p.stem.startswith("step_") and p.stem[5:].isdigit()),
         key=lambda p: int(p.stem.split("_")[1]),
     )
     current = sorted(
         (p for p in directory.glob("update_*.ckpt")
-         if re.fullmatch(r"update_\\d+\\.ckpt", p.name)),
+         if p.stem.startswith("update_") and p.stem[7:].isdigit()),
         key=lambda p: int(p.stem.split("_")[1]),
     )
     for stale in (legacy + current)[:-keep_last]:
