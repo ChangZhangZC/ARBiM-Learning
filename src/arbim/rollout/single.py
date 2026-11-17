@@ -27,6 +27,7 @@ def run_single_episode(
     *,
     execute_steps: int = 16,
     max_env_steps: int = 1000,
+    post_success_steps: int = 0,
     seed: int | None = None,
     deterministic: bool = True,
     on_frame: Callable[[Mapping[str, Any], int], None] | None = None,
@@ -40,6 +41,8 @@ def run_single_episode(
         raise ValueError("execute_steps must be in [1, policy.n_action_steps].")
     if type(max_env_steps) is not int or max_env_steps < 1:
         raise ValueError("max_env_steps must be a positive integer.")
+    if type(post_success_steps) is not int or post_success_steps < 0:
+        raise ValueError("post_success_steps must be a nonnegative integer.")
     if type(policy.n_obs_steps) is not int or policy.n_obs_steps < 1:
         raise ValueError("policy.n_obs_steps must be a positive integer.")
     if seed is not None and (type(seed) is not int or seed < 0):
@@ -62,6 +65,7 @@ def run_single_episode(
     history = deque((snapshot(observation) for _ in range(policy.n_obs_steps)),
                     maxlen=policy.n_obs_steps)
     success = bool(info.get("success", False))
+    first_success_step = 0 if success else None
     terminated = truncated = False
     episode_steps = 0
     episode_return = 0.0
@@ -70,7 +74,9 @@ def run_single_episode(
     final_stage = info.get("stage")
     stop_reason = "success" if success else "max_env_steps"
 
-    while not success and episode_steps < max_env_steps:
+    while episode_steps < max_env_steps and (first_success_step is None or
+           episode_steps - first_success_step < post_success_steps):
+        should_stop = False
         window = {
             key: np.stack([frame[key] for frame in history], axis=0)[None]
             for key in keys
@@ -92,25 +98,35 @@ def run_single_episode(
             if on_frame is not None:
                 on_frame(observation, episode_steps)
             history.append(snapshot(observation))
-            success = bool(info["success"])
+            step_success = bool(info["success"])
+            if step_success and first_success_step is None:
+                first_success_step = episode_steps
+            success = success or step_success
             final_stage = info.get("stage", final_stage)
-            if success or terminated or truncated or episode_steps >= max_env_steps:
-                if success:
-                    stop_reason = "success"
-                elif terminated:
-                    stop_reason = "terminated"
-                elif truncated:
+            grace_complete = (first_success_step is not None and
+                              episode_steps - first_success_step >= post_success_steps)
+            # HingeChest's native terminated=True comes from success itself.
+            # The pinned RCS simulation can continue stepping after this signal.
+            if grace_complete or truncated or (terminated and not step_success) or episode_steps >= max_env_steps:
+                if truncated:
                     stop_reason = "truncated"
+                elif terminated and not step_success:
+                    stop_reason = "terminated"
+                elif grace_complete:
+                    stop_reason = "success"
                 else:
                     stop_reason = "max_env_steps"
+                should_stop = True
                 break
-        if success or terminated or truncated or episode_steps >= max_env_steps:
+        if should_stop:
             break
 
     if isinstance(final_stage, np.generic):
         final_stage = final_stage.item()
     return {
         "success": success,
+        "first_success_step": first_success_step,
+        "post_success_steps_executed": (episode_steps - first_success_step if first_success_step is not None else 0),
         "terminated": bool(terminated),
         "truncated": bool(truncated),
         "max_steps_reached": stop_reason == "max_env_steps",
@@ -165,6 +181,7 @@ def main() -> None:
             execute_steps=rollout_cfg.get("execute_steps", policy.n_action_steps),
             max_env_steps=(args.max_env_steps if args.max_env_steps is not None
                            else rollout_cfg.get("max_env_steps", 1000)),
+            post_success_steps=rollout_cfg.get("post_success_steps", 0),
             seed=seed, deterministic=policy_cfg.get("deterministic", True),
         )
         print(json.dumps(result, ensure_ascii=False, indent=2))

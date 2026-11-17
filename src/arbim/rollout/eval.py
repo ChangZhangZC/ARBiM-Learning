@@ -101,6 +101,7 @@ def evaluate_episodes(
     camera_map: Mapping[str, str],
     execute_steps: int,
     max_env_steps: int,
+    post_success_steps: int = 0,
     seed: int | None = None,
     deterministic: bool = True,
     record_video: bool = True,
@@ -131,6 +132,8 @@ def evaluate_episodes(
         raise ValueError("execute_steps must be in [1, policy.n_action_steps].")
     if type(max_env_steps) is not int or max_env_steps < 1:
         raise ValueError("max_env_steps must be positive.")
+    if type(post_success_steps) is not int or post_success_steps < 0:
+        raise ValueError("post_success_steps must be a nonnegative integer.")
 
     folder = Path(output_dir)
     folder.mkdir(parents=True, exist_ok=True)
@@ -169,6 +172,7 @@ def evaluate_episodes(
                     adapter, policy, spec,
                     execute_steps=execute_steps,
                     max_env_steps=max_env_steps,
+                    post_success_steps=post_success_steps,
                     seed=episode_seed,
                     deterministic=deterministic,
                     on_frame=record_frame if recorder is not None else None,
@@ -285,6 +289,7 @@ def main() -> None:
             camera_map=env_cfg["camera_map"],
             execute_steps=rollout_cfg.get("execute_steps", policy.n_action_steps),
             max_env_steps=rollout_cfg.get("max_env_steps", 1000),
+            post_success_steps=rollout_cfg.get("post_success_steps", 0),
             seed=seed,
             deterministic=policy_cfg.get("deterministic", True),
             record_video=record_video,

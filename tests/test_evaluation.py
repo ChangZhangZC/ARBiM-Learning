@@ -217,7 +217,7 @@ def test_cli_resolves_config_and_closes_environment(tmp_path, monkeypatch, spec,
     config = {
         "env": {"task": "hinge_chest", "camera_map": camera_map, "frequency": 30},
         "policy": {"checkpoint_path": "/mock/best.ckpt", "device": "cpu"},
-        "rollout": {"num_episodes": 2, "max_env_steps": 10, "execute_steps": 2, "seed": 42},
+        "rollout": {"num_episodes": 2, "max_env_steps": 10, "execute_steps": 2, "post_success_steps": 5, "seed": 42},
         "output": {"root": str(tmp_path / "runs"), "run_id": "test_run", "record_video": False,
                    "video_fps": None},
     }
@@ -244,8 +244,10 @@ def test_cli_resolves_config_and_closes_environment(tmp_path, monkeypatch, spec,
                                "config_resolved.yaml").read_text())
     assert env.closed and seeded == [42]
     assert called[0]["num_episodes"] == 3 and called[0]["max_env_steps"] == 5
+    assert called[0]["post_success_steps"] == 5
     assert resolved["rollout"]["num_episodes"] == 3
     assert resolved["rollout"]["max_env_steps"] == 5
+    assert resolved["rollout"]["post_success_steps"] == 5
     assert resolved["output"]["video_fps"] == 30
     assert resolved["output"]["run_id"] == "test_run"
 
@@ -337,3 +339,40 @@ def test_invalid_video_source_rejected_before_run(tmp_path, spec, camera_map):
             record_video=True, video_source="upscaled",
         )
     assert not (tmp_path / "run").exists()
+
+
+def test_evaluation_forwards_post_success_steps(tmp_path, spec, camera_map, monkeypatch):
+    calls = []
+
+    def fake_episode(adapter, policy, saved_spec, **kwargs):
+        calls.append(kwargs)
+        return {
+            "success": True, "terminated": True, "truncated": False,
+            "max_steps_reached": False, "stop_reason": "success",
+            "first_success_step": 3, "post_success_steps_executed": 5,
+            "episode_steps": 8, "episode_return": 3.0, "final_stage": 3,
+            "inference_count": 2, "mean_inference_ms": 1.0, "elapsed_time": 1.0,
+        }
+
+    monkeypatch.setattr(evaluation, "run_single_episode", fake_episode)
+    summary = evaluation.evaluate_episodes(
+        object(), SimpleNamespace(n_action_steps=16), spec,
+        num_episodes=1, output_dir=tmp_path, camera_map=camera_map,
+        execute_steps=16, max_env_steps=20, post_success_steps=5,
+        record_video=False,
+    )
+    assert calls[0]["post_success_steps"] == 5
+    assert summary["success_count"] == 1
+    assert json.loads((tmp_path / "episodes.jsonl").read_text())["post_success_steps_executed"] == 5
+
+
+@pytest.mark.parametrize("invalid", [-1, True, 1.5, "5"])
+def test_evaluation_rejects_invalid_post_success_steps(tmp_path, spec, camera_map, invalid):
+    with pytest.raises(ValueError, match="post_success_steps"):
+        evaluation.evaluate_episodes(
+            object(), SimpleNamespace(n_action_steps=16), spec,
+            num_episodes=1, output_dir=tmp_path / "invalid",
+            camera_map=camera_map, execute_steps=16, max_env_steps=20,
+            post_success_steps=invalid, record_video=False,
+        )
+    assert not (tmp_path / "invalid").exists()
