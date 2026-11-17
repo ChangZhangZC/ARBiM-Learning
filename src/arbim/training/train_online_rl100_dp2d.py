@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import hashlib
 import json
 import math
 import signal
@@ -138,6 +139,15 @@ def _new_run_dir(cfg: Mapping[str, Any]) -> Path:
     return run_dir
 
 
+
+def _file_sha256(path: str | Path) -> str:
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as source:
+        for block in iter(lambda: source.read(4 * 1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
 def _write_run_meta(run_dir: Path, cfg: Mapping[str, Any], il_path: str) -> None:
     from arbim.training.train_rl100_dp2d import _git_revision
     root = Path(__file__).resolve().parents[3]
@@ -148,6 +158,7 @@ def _write_run_meta(run_dir: Path, cfg: Mapping[str, Any], il_path: str) -> None
             "duobench": _git_revision(root / "third_party" / "duobench"),
         },
         "initial_il_checkpoint": il_path,
+        "initial_il_sha256": _file_sha256(il_path),
         "policy_device": cfg["policy"]["device"],
         "task": cfg["env"]["task"],
         "created_at": datetime.now().isoformat(),
@@ -234,6 +245,11 @@ def run(config: dict[str, Any]) -> Path:
         if resume_path.name != "last.ckpt" or resume_path.parent.name != "checkpoints":
             raise ValueError("Resume must use checkpoints/last.ckpt.")
         run_dir = resume_path.parent.parent
+        meta_path = run_dir / "run_meta.json"
+        if meta_path.is_file():
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            if meta.get("initial_il_sha256") and meta["initial_il_sha256"] != _file_sha256(il_path):
+                raise ValueError("Original IL checkpoint contents changed since Online run creation.")
         payload = read_online_checkpoint(resume_path, config=frozen, original_checkpoint=il_path)
         updates, episodes, env_steps = restore_online_checkpoint(ppo, payload)
         if _budget_reached(cfg, updates, env_steps):
