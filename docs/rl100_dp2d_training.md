@@ -17,7 +17,7 @@ python -m arbim.training.train_rl100_dp2d --config configs/il/rl100_dp2d.yaml
 Output by default:
 
 ```text
-outputs/il/<task>/<method>/<YYYYMMDD_HHMMSS>/
+outputs/il/<task>/<method>/run_<YYYYMMDD_HHMMSS>/
   config_resolved.yaml
   run_meta.json
   metrics.jsonl
@@ -29,8 +29,10 @@ outputs/il/<task>/<method>/<YYYYMMDD_HHMMSS>/
     best.ckpt               # lowest measured validation loss; raw Policy
 ```
 
-Use `training.run_name` for an explicit run name or `output.output_dir`
-for a full path. A fresh run rejects existing directories. There are no
+Use `training.run_name: my_run_{timestep}` for a custom label with an automatically
+expanded timestamp (format `YYYYMMDD_HHMMSS`), or a fixed name without the
+token. `null` retains the original timestamp-only directory naming.
+`output.output_dir` can still specify a full path and takes precedence. A fresh run rejects existing directories. There are no
 batch-count smoke caps in the production YAML; all eligible training windows
 are used per complete epoch.
 
@@ -104,7 +106,8 @@ exact-Step checkpoint. Start a new run for this checkpoint format.
 Terminal output shows Step/target, equivalent Epoch, Loss, LR, throughput and
 ETA. Machine-readable `metrics.jsonl` is always available when enabled.
 TensorBoard requires `python -m pip install tensorboard` and can be viewed
-via `tensorboard --logdir outputs/il`. Optional W&B requires
+via `tensorboard --logdir outputs/il`. Alternatively, edit `path=` in
+`scripts/tensorboard.sh` and run `bash scripts/tensorboard.sh` from the repository root. Optional W&B requires
 `python -m pip install wandb`, and `mode: offline` avoids cloud access.
 Resume trims metrics newer than the last durable checkpoint and retains the
 W&B Run ID if it exists.
