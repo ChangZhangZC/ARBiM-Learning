@@ -12,7 +12,8 @@ from arbim.rl.online.telemetry import (
     reconcile_online_metrics, reconcile_native_ratio_csv, native_ratio_summary,
 )
 from arbim.training.train_online_rl100_dp2d import (
-    _budget_reached, _new_run_dir, _frozen_config, _file_sha256, validate_config,
+    _budget_reached, _new_run_dir, _frozen_config, _file_sha256,
+    normalize_online_config, validate_config,
 )
 
 
@@ -25,21 +26,53 @@ def profile():
     return cfg
 
 
-def test_total_budget_terminates_at_complete_update_boundary():
+def test_ppo_updates_are_the_only_training_budget():
     cfg = profile()
-    cfg["rollout"].update(max_updates=None, max_total_env_steps=10000)
+    cfg["ppo"]["max_updates"] = 10000
     validate_config(cfg)
-    assert not _budget_reached(cfg, updates=10, env_steps=9920)
-    assert _budget_reached(cfg, updates=11, env_steps=10912)
-    cfg["rollout"].update(max_updates=9)
-    assert _budget_reached(cfg, updates=9, env_steps=8928)
+    assert not _budget_reached(cfg, updates=9999)
+    assert _budget_reached(cfg, updates=10000)
+    # Total environmental interactions and Eval steps do not affect stopping.
+    cfg["env"]["max_episode_steps"] = 992
+    cfg["evaluation"]["every_updates"] = 50
+    assert not _budget_reached(cfg, updates=9999)
 
 
-def test_budget_requires_at_least_one_limit():
+def test_ppo_budget_requires_positive_updates():
     cfg = profile()
-    cfg["rollout"].update(max_updates=None, max_total_env_steps=None)
-    with pytest.raises(ValueError, match="max_updates"):
+    cfg["ppo"]["max_updates"] = None
+    with pytest.raises(ValueError, match="ppo.max_updates"):
         validate_config(cfg)
+
+
+def test_episode_limit_is_unified_and_old_budgets_are_rejected():
+    cfg = profile()
+    cfg["env"]["max_episode_steps"] = 992
+    validate_config(cfg)
+    cfg["env"]["max_episode_steps"] = 0
+    with pytest.raises(ValueError, match="env.max_episode_steps"):
+        validate_config(cfg)
+
+
+def test_old_run_yaml_can_be_migrated_without_changing_episode_limit():
+    cfg = profile()
+    old = copy.deepcopy(cfg)
+    cap = old["env"].pop("max_episode_steps")
+    old["rollout"].update(max_env_steps=cap, max_updates=old["ppo"].pop("max_updates"),
+                          max_total_env_steps=None)
+    old["evaluation"]["max_env_steps"] = cap
+    old["ppo"]["max_train_steps"] = 100000
+    normalized, original = normalize_online_config(old)
+    assert normalized == cfg
+    assert original == old
+    validate_config(normalized)
+    old["evaluation"]["max_env_steps"] += 32
+    with pytest.raises(ValueError, match="episode limits differ"):
+        normalize_online_config(old)
+    old["evaluation"]["max_env_steps"] = cap
+    old["rollout"]["max_total_env_steps"] = 10000
+    with pytest.raises(ValueError, match="cannot be mapped"):
+        normalize_online_config(old)
 
 
 def test_run_name_template_and_non_overwrite(tmp_path):
