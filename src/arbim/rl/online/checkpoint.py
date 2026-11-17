@@ -79,6 +79,24 @@ def _legacy_contract_digest(config: Mapping[str, Any]) -> str:
     })
 
 
+def _migrated_legacy_contract_digest(config: Mapping[str, Any]) -> str:
+    """Compare an old saved run with new settings, excluding operational budgets."""
+    env = copy.deepcopy(config["env"])
+    env["max_episode_steps"] = config["rollout"]["max_env_steps"]
+    policy = copy.deepcopy(config["policy"])
+    policy.pop("device", None)
+    ppo = copy.deepcopy(config["ppo"])
+    ppo.pop("max_train_steps", None)  # inactive in V1 (linear_lr_decay=False)
+    ppo.pop("max_updates", None)
+    return _digest({
+        "env": env,
+        "policy": policy,
+        "ppo": ppo,
+        "reward": copy.deepcopy(config["reward"]),
+        "rollout": {"seed": config["rollout"]["seed"]},
+    })
+
+
 def save_online_checkpoint(
     path: str | Path, ppo: Any, *, config: Mapping[str, Any],
     updates: int, episode_count: int, env_steps: int,
@@ -114,13 +132,16 @@ def read_online_checkpoint(
         raise ValueError("Not a supported completed-batch Online PPO checkpoint.")
     if payload.get("original_checkpoint") != original_checkpoint:
         raise ValueError("Online Resume original IL checkpoint path differs.")
+    if legacy_config is not None and (
+        _contract_digest(config) != _migrated_legacy_contract_digest(legacy_config)
+    ):
+        raise ValueError("Legacy Online Resume changes the algorithm/environment contract.")
     if version == 1:
-        # Previous V1 checkpoints embedded the full pre-reorganization YAML.
         expected = dict(legacy_config) if legacy_config is not None else dict(config)
         if payload.get("config") != expected:
             raise ValueError("Online V1 Resume requires its original complete configuration.")
     elif payload.get("contract_digest") != _contract_digest(config):
-        # Allow the original Task 7 V2 digest during schema migration only.
+        # The old V2 SHA is accepted only with its matching, unmodified YAML.
         if legacy_config is None or payload["contract_digest"] != _legacy_contract_digest(legacy_config):
             raise ValueError("Online Resume algorithm/environment contract differs.")
     for key in ("updates", "episodes", "env_steps"):
