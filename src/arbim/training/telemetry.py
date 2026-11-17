@@ -15,7 +15,7 @@ class MetricLogger:
         self.jsonl = run_dir / "metrics.jsonl"
         self.tb = None
         self.wb = None
-        if resumed:
+        if resumed and cfg["logging"].get("jsonl", True):
             trim_metrics(self.jsonl, resume_step)
         tb_cfg = cfg["logging"]["tensorboard"]
         wb_cfg = cfg["logging"]["wandb"]
