@@ -324,13 +324,15 @@ def run(config: dict[str, Any], *, legacy_config: dict[str, Any] | None = None) 
         logger = OnlineTelemetry(
             logging_settings, run_dir, resumed=resume_path is not None,
             resume_updates=updates, resume_env_steps=env_steps,
+            migrate_legacy_tb=legacy_config is not None,
         )
     finally:
         _restore_rng(rng)
     logger.message(f"[ONLINE] run={run_dir}")
     logger.message(
         f"[INIT] actor=RL1002D H={span} K={policy.num_inference_steps} "
-        f"device={cfg['policy']['device']} update={updates} steps={env_steps}"
+        f"device={cfg['policy']['device']} update={updates}/{cfg['ppo']['max_updates']} "
+        f"env_steps={env_steps}"
     )
 
     stop_requested = False
@@ -366,6 +368,7 @@ def run(config: dict[str, Any], *, legacy_config: dict[str, Any] | None = None) 
                             desc="PPO Updates", unit="update", dynamic_ncols=True)
         while not _budget_reached(cfg, updates):
             batch_rollouts = []
+            batch_rollout_elapsed = 0.0
             while buffer.count < cfg["ppo"]["batch_size"]:
                 ppo._policy.eval()
                 start = time.perf_counter()
@@ -386,25 +389,15 @@ def run(config: dict[str, Any], *, legacy_config: dict[str, Any] | None = None) 
                 }
                 logger.event(
                     "rollout", record,
-                    summary=(f"[ROLL] ep={episodes} steps={result['episode_steps']} "
+                    summary=(f"[ROLL] ep={episodes} env_steps={result['episode_steps']} "
                              f"return={result['env_return']:.2f} "
                              f"stage={result['final_stage']} success={int(result['success'])}"),
-                    groups={
-                        "rollout": {
-                            "return_raw": result["env_return"],
-                            "return_train": result["train_return"],
-                            "success": int(result["success"]),
-                            **({"stage": result["final_stage"]} if isinstance(result["final_stage"], (int, float)) else {}),
-                            "episode_steps": result["episode_steps"],
-                            "transitions": result["transitions"],
-                        },
-                        "system": {
-                            "rollout_s": elapsed,
-                            "env_steps_per_s": result["episode_steps"] / max(elapsed, 1e-9),
-                        },
-                    },
+                    # Individual episodes are kept in JSONL. TensorBoard uses
+                    # per-PPO-update aggregates to avoid duplicate x-axis steps.
+                    groups=None,
                 )
                 batch_rollouts.append(result)
+                batch_rollout_elapsed += elapsed
                 # Keep collecting complete episodes until the PPO batch is valid.
                 # Stopping early can produce a one-sample advantage/std NaN.
 
@@ -422,6 +415,18 @@ def run(config: dict[str, Any], *, legacy_config: dict[str, Any] | None = None) 
             ppo.set_old_policy()
             actor_lr = float(ppo.optimizer_actor.param_groups[0]["lr"])
             critic_lr = float(ppo.optimizer_critic.param_groups[0]["lr"])
+            batch_size = len(batch_rollouts)
+            batch_env_steps = sum(item["episode_steps"] for item in batch_rollouts)
+            batch_stage = [float(item["final_stage"]) for item in batch_rollouts
+                           if isinstance(item["final_stage"], (int, float))]
+            rollout_averages = {
+                "return_raw": sum(item["env_return"] for item in batch_rollouts) / batch_size,
+                "return_train": sum(item["train_return"] for item in batch_rollouts) / batch_size,
+                "success_rate": sum(bool(item["success"]) for item in batch_rollouts) / batch_size,
+                "episode_steps": batch_env_steps / batch_size,
+                "transitions": sum(item["transitions"] for item in batch_rollouts) / batch_size,
+                **({"stage": sum(batch_stage) / len(batch_stage)} if batch_stage else {}),
+            }
             record = {
                 "event": "ppo", "updates": updates, "episodes": episodes, "env_steps": env_steps,
                 **metrics, "actor_lr": actor_lr, "critic_lr": critic_lr,
@@ -429,13 +434,19 @@ def run(config: dict[str, Any], *, legacy_config: dict[str, Any] | None = None) 
             }
             logger.event(
                 "ppo", record,
-                summary=(f"[PPO] update={updates} steps={env_steps} "
+                summary=(f"[PPO] update={updates}/{total_budget} env_steps={env_steps} "
                          f"actor={metrics['actor_loss']:.4f} critic={metrics['critic_loss']:.2f} "
                          f"lr={actor_lr:.2e}/{critic_lr:.2e}"),
                 groups={
                     "ppo": {"actor_loss": metrics["actor_loss"], "critic_loss": metrics["critic_loss"]},
                     "lr": {"actor": actor_lr, "critic": critic_lr},
-                    "system": {"ppo_update_s": update_elapsed},
+                    "rollout": rollout_averages,
+                    "progress": {"ppo_updates": updates, "episodes": episodes, "env_steps": env_steps},
+                    "system": {
+                        "rollout_s": batch_rollout_elapsed,
+                        "env_steps_per_s": batch_env_steps / max(batch_rollout_elapsed, 1e-9),
+                        "ppo_update_s": update_elapsed,
+                    },
                     "diagnostics": ratio_metrics,
                 },
             )
@@ -463,7 +474,7 @@ def run(config: dict[str, Any], *, legacy_config: dict[str, Any] | None = None) 
                     "checkpoint",
                     {"event": "checkpoint", "updates": updates, "episodes": episodes,
                      "env_steps": env_steps, "path": str(snapshot)},
-                    summary=f"[SAVE] steps={env_steps} last.ckpt + {snapshot.name}",
+                    summary=f"[SAVE] update={updates} env_steps={env_steps} last.ckpt + {snapshot.name}",
                 )
             evaluation_cfg = cfg["evaluation"]
             if not stop_requested and evaluation_cfg["enabled"] and (
@@ -535,7 +546,7 @@ def main() -> None:
     parser.add_argument("--resume", type=Path, help="Existing run directory or checkpoints/last.ckpt.")
     parser.add_argument("--output-root", type=Path, help="Output root for a new run.")
     parser.add_argument("--run-name", help="New run directory name; supports {timestep}.")
-    parser.add_argument("--max-updates", type=int, help="Override rollout.max_updates; allowed on V2 Resume.")
+    parser.add_argument("--max-updates", type=int, help="Override ppo.max_updates; allowed on V2 Resume.")
     parser.add_argument("--no-eval", action="store_true", help="Skip evaluation.")
     args = parser.parse_args()
     if args.resume is not None:
