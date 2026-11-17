@@ -123,9 +123,12 @@ def check_config(cfg: dict[str, Any]) -> None:
     run_name = tr.get("run_name")
     if run_name is not None and (
         not isinstance(run_name, str)
-        or not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9_.-]*", run_name)
+        or not re.fullmatch(
+            r"[a-zA-Z0-9][a-zA-Z0-9_.-]*",
+            run_name.replace("{timestep}", "20260101_000000")
+        )
     ):
-        raise ValueError("training.run_name must be null or a safe path component.")
+        raise ValueError("training.run_name must be null or a safe path component with optional {timestep}.")
     if not isinstance(policy.get("horizon"), int) or not isinstance(policy.get("n_obs_steps"), int):
         raise ValueError("policy.horizon and policy.n_obs_steps must be positive integers.")
     if policy["n_obs_steps"] < 1 or policy["horizon"] < policy["n_obs_steps"]:
@@ -207,7 +210,8 @@ def resolve_run_directory(cfg: dict[str, Any], resume: str | Path | None) -> Pat
         run_dir = Path(output["output_dir"])
     else:
         prefix = Path(output["root"]) / cfg["training"]["task"] / cfg["training"]["method"]
-        run_name = cfg["training"].get("run_name") or datetime.now().strftime("%Y%m%d_%H%M%S")
+        run_name = cfg["training"].get("run_name") or "{timestep}"
+        run_name = run_name.replace("{timestep}", datetime.now().strftime("%Y%m%d_%H%M%S"))
         run_dir = prefix / run_name
     run_dir = run_dir.expanduser().resolve()
     if run_dir.exists():
