@@ -40,9 +40,6 @@ ppo:
   value_depth: 3
   fix_encoder: true
   share_encoder: true
-  use_bc: false
-  value_recon: false
-  recon: false
   advantage_normalize: true
   clip_value: false
   linear_lr_decay: false
@@ -52,8 +49,6 @@ ppo:
   min_lr_critic: 0.000001
   max_lr_critic: 0.001
   max_train_steps: 100000
-  distill_phase: "off"
-  enable_ratio_logging: false
 
 reward:
   mode: env_raw          # only for end-to-end Smoke; not a validated scientific reward
@@ -61,12 +56,14 @@ reward:
 rollout:
   max_env_steps: 992      # divisible by both common H=4 and H=16
   seed: 42
-  max_updates: 1          # 1 for initial PPO Smoke; increase only after feature validation
+  max_updates: 1          # safe smoke-test default; null disables update limit
+  max_total_env_steps: null # total interaction budget, e.g. 10000; stops at update boundary
 
 evaluation:
   enabled: true
   every_updates: 1
   num_episodes: 2
+  seed: 100042          # constant across all evaluations for comparable curves
   max_env_steps: 992
   record_video: false
   video_source: native    # native/policy
@@ -74,7 +71,17 @@ evaluation:
 
 checkpoint:
   every_updates: 1
-  resume: null            # path to checkpoints/last.ckpt in the SAME online run
+  keep_last: 3           # policy-only step_*.ckpt; last.ckpt always retained
+  save_on_finish: true
+  resume: null           # prefer --resume <run_dir> CLI
+logging:
+  jsonl: true
+  progress_bar: true
+  tensorboard:
+    enabled: true        # local outputs/online/.../tensorboard/
+  ratio_diagnostics:
+    enabled: true
+    every_updates: 5    # upstream native PPO ratio sampling; debug overhead
 output:
   root: outputs/online
-  run_name: null          # null = auto UTC timestamp + microseconds
+  run_name: run_{timestep}  # same naming contract as IL/Eval
