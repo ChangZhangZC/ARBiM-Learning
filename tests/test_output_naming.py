@@ -24,7 +24,7 @@ def test_training_run_name_expands_timestamp_and_preserves_prefix(tmp_path):
     check_config(cfg)
     path = resolve_run_directory(cfg, None)
     assert path.parent == tmp_path / cfg["training"]["task"] / cfg["training"]["method"]
-    assert re.fullmatch(r"experiment_A_\\d{8}_\\d{6}", path.name)
+    assert re.fullmatch(r"experiment_A_\d{8}_\d{6}", path.name)
 
 
 def test_training_fixed_name_and_null_fallback(tmp_path):
@@ -34,7 +34,7 @@ def test_training_fixed_name_and_null_fallback(tmp_path):
     assert resolve_run_directory(cfg, None).name == "fixed_label"
     cfg["training"]["run_name"] = None
     check_config(cfg)
-    assert re.fullmatch(r"\\d{8}_\\d{6}", resolve_run_directory(cfg, None).name)
+    assert re.fullmatch(r"\d{8}_\d{6}", resolve_run_directory(cfg, None).name)
 
 
 @pytest.mark.parametrize("invalid", ["oops_{wrong}", "../escape_{timestep}", "bad/name", ""])
@@ -46,9 +46,9 @@ def test_training_rejects_invalid_run_names(tmp_path, invalid):
 
 
 def test_eval_run_id_timestamp_template_and_fixed():
-    assert re.fullmatch(r"eval_\\d{8}_\\d{6}_\\d{6}", resolve_eval_run_id("eval_{timestep}"))
-    assert re.fullmatch(r"trial_\\d{8}_\\d{6}_\\d{6}", resolve_eval_run_id("trial_{timestep}"))
-    assert re.fullmatch(r"\\d{8}_\\d{6}_\\d{6}", resolve_eval_run_id(None))
+    assert re.fullmatch(r"eval_\d{8}_\d{6}_\d{6}", resolve_eval_run_id("eval_{timestep}"))
+    assert re.fullmatch(r"trial_\d{8}_\d{6}_\d{6}", resolve_eval_run_id("trial_{timestep}"))
+    assert re.fullmatch(r"\d{8}_\d{6}_\d{6}", resolve_eval_run_id(None))
     assert resolve_eval_run_id("fixed_eval") == "fixed_eval"
 
 
