@@ -33,6 +33,7 @@ policy:
 rollout:
   execute_steps: 16              # each prediction executes up to this many steps
   max_env_steps: 1000            # set --max-env-steps 32 for initial smoke
+  post_success_steps: 5          # execute five additional policy actions after native success (0=upstream)
 
   seed: 42
   num_episodes: 10               # CLI --episodes overrides
