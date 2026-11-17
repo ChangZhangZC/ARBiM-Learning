@@ -164,7 +164,7 @@ def test_post_success_executes_five_more_steps_and_keeps_chunk_order(spec):
             success = self.tick >= 3
             return obs, reward, success, False, {"success": success, "stage": 3 if success else self.tick}
 
-    adapter, policy = NativeHingeAdapter(spec)
+    adapter, policy = NativeHingeAdapter(spec), FakePolicy()
     result = single.run_single_episode(
         adapter, policy, spec, execute_steps=4,
         max_env_steps=20, post_success_steps=5,
