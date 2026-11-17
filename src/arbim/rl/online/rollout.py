@@ -69,13 +69,13 @@ def collect_online_episode(
             if ended:
                 break
 
-        if len(rewards) < span and not (terminated or success):
-            raise RuntimeError(
-                "Nonterminal partial Chunk is unsupported by native gamma**n_action_steps GAE."
-            )
         if len(rewards) < span and truncated and not terminated:
             raise RuntimeError(
                 "Partial truncated Chunk requires variable-span GAE; unsupported in V1."
+            )
+        if len(rewards) < span and not (terminated or success):
+            raise RuntimeError(
+                "Nonterminal partial Chunk is unsupported by native gamma**n_action_steps GAE."
             )
         after = observation_window(history, spec)
         chunk_r = discounted_chunk_reward(rewards, gamma)

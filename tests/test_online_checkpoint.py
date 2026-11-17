@@ -1,5 +1,6 @@
 """Training checkpoints and inference snapshots use distinct formats."""
-from types import SimpleNamespace
+import sys
+from types import ModuleType, SimpleNamespace
 
 import torch
 
@@ -26,7 +27,21 @@ class FakePPO:
         self.old_synced = True
 
 
-def test_online_training_state_round_trip(tmp_path):
+def test_online_training_state_round_trip(tmp_path, monkeypatch):
+    # This isolated FakePPO test validates the native helper call contract
+    # without requiring the RL-100 submodule to be importable. Real Online PPO
+    # still requires the pinned rl_100 package at runtime.
+    native_util = ModuleType("rl_100.common.pytorch_util")
+    calls = []
+
+    def fake_optimizer_to(optimizer, device):
+        calls.append((optimizer, device))
+        return optimizer
+
+    native_util.optimizer_to = fake_optimizer_to
+    monkeypatch.setitem(sys.modules, "rl_100", ModuleType("rl_100"))
+    monkeypatch.setitem(sys.modules, "rl_100.common", ModuleType("rl_100.common"))
+    monkeypatch.setitem(sys.modules, "rl_100.common.pytorch_util", native_util)
     config = {"test": "fixed"}
     original = "/tmp/example/best.ckpt"
     first = FakePPO()
@@ -38,6 +53,8 @@ def test_online_training_state_round_trip(tmp_path):
     counts = restore_online_checkpoint(other, payload)
     assert counts == (2, 4, 50)
     assert other.old_synced
+    assert [optimizer for optimizer, _ in calls] == [other.optimizer_actor, other.optimizer_critic]
+    assert all(device == torch.device("cpu") for _, device in calls)
     assert all(torch.equal(a, b) for a, b in zip(
         first._policy.parameters(), other._policy.parameters()
     ))
