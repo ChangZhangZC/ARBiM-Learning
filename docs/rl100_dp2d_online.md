@@ -138,7 +138,7 @@ is implied by this behavior.
 To view TensorBoard on the training machine:
 
 ```bash
-tensorboard --logdir outputs/online --bind_all --port 6006
+tensorboard --logdir outputs/online --host 127.0.0.1 --port 6006
 ```
 
 Use SSH port forwarding when accessing from another computer rather than
