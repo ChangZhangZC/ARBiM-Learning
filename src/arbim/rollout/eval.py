@@ -209,6 +209,17 @@ def evaluate_episodes(
     return summary
 
 
+def resolve_eval_run_id(template: str | None) -> str:
+    """Expand the optional launch-time {timestep} token."""
+    if template is not None and not isinstance(template, str):
+        raise ValueError("output.run_id must be a string or null.")
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    run_id = (template if template is not None else "{timestep}").replace("{timestep}", timestamp)
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", run_id):
+        raise ValueError("output.run_id must contain only letters, digits, underscore or hyphen.")
+    return run_id
+
+
 def main() -> None:
     import yaml
     from arbim.envs.duobench import DuoBenchAdapter, create_duobench_env
@@ -253,9 +264,7 @@ def main() -> None:
     video_fps = (env_cfg.get("frequency", 30) if output_cfg.get("video_fps") is None
                  else output_cfg["video_fps"])
     root = Path(output_cfg.get("root", "outputs/eval")).expanduser()
-    run_id = output_cfg.get("run_id") or datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-    if not isinstance(run_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]+", run_id):
-        raise ValueError("output.run_id must contain only letters, digits, underscore or hyphen.")
+    run_id = resolve_eval_run_id(output_cfg.get("run_id"))
     run_dir = root / "hinge_chest" / run_id
 
     policy, spec, _ = load_inference_policy(
@@ -275,6 +284,7 @@ def main() -> None:
         )
         # An existing run must never be silently overwritten.
         run_dir.mkdir(parents=True, exist_ok=False)
+        print(f"[EVAL] run={run_dir}", flush=True)
         rollout_cfg["num_episodes"] = num_episodes
         rollout_cfg["execute_steps"] = rollout_cfg.get("execute_steps", policy.n_action_steps)
         rollout_cfg["max_env_steps"] = rollout_cfg.get("max_env_steps", 1000)
