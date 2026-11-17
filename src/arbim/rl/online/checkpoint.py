@@ -39,9 +39,11 @@ def online_resume_contract(config: Mapping[str, Any]) -> dict[str, Any]:
     The run directory's config_resolved.yaml is the authoritative full config.
     """
     rollout = config["rollout"]
+    policy = copy.deepcopy(config["policy"])
+    policy.pop("device", None)  # runtime device is not an algorithm change
     return {
         "env": copy.deepcopy(config["env"]),
-        "policy": copy.deepcopy(config["policy"]),
+        "policy": policy,
         "ppo": copy.deepcopy(config["ppo"]),
         "reward": copy.deepcopy(config["reward"]),
         "rollout": {
