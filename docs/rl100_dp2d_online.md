@@ -77,12 +77,13 @@ broadcasting issue for longer chunks.
 outputs/online/hinge_chest/run_YYYYMMDD_HHMMSS/
   config_resolved.yaml      # authoritative full config
   config_history.jsonl      # budget/logging amendments on resume (when changed)
-  run_meta.json             # source IL path, Git/submodule revisions, task/device
+  run_meta.json             # IL path/SHA256, Git/submodule revisions, task/device
   metrics.jsonl             # structured rollout/ppo/evaluation/checkpoint events
   metrics.uncommitted.jsonl # optional archived events newer than last durable update
   train.log                 # compact ARBiM terminal summaries
   tensorboard/              # local scalar event files, when enabled
-  diagnostics/ratio_stats.csv # native ratio data, sampled when enabled
+  diagnostics/ratio_stats.csv # append-only native ratio data, when enabled
+  diagnostics/ratio.uncommitted.csv # optional archived uncommitted ratio rows
   checkpoints/
     last.ckpt               # actor, critic, optimizers, adaptive LR, RNG, counters
     step_XXXXXXXX.ckpt      # policy + inference contract, directly eval-able
@@ -93,8 +94,9 @@ outputs/online/hinge_chest/run_YYYYMMDD_HHMMSS/
       summary.json
 ```
 
-The original IL `last.ckpt` is not copied into the Online run. Its path is
-recorded; it must remain accessible for Resume policy reconstruction. The new
+The original IL `last.ckpt` is not copied into the Online run. Its path and
+streaming SHA256 checksum are recorded; the source must remain accessible and
+unaltered for strict Resume policy reconstruction. The new
 Online `last.ckpt` format V2 stores a strict algorithm-contract SHA256 digest
 instead of a duplicate full YAML; V1 smoke checkpoints remain readable with
 their original strict full-config contract.
