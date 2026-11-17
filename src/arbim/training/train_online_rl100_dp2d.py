@@ -236,6 +236,8 @@ def run(config: dict[str, Any]) -> Path:
         run_dir = resume_path.parent.parent
         payload = read_online_checkpoint(resume_path, config=frozen, original_checkpoint=il_path)
         updates, episodes, env_steps = restore_online_checkpoint(ppo, payload)
+        if _budget_reached(cfg, updates, env_steps):
+            raise ValueError("Online run already reached its configured training budget.")
         previous_config = yaml.safe_load((run_dir / "config_resolved.yaml").read_text(encoding="utf-8"))
         if previous_config != frozen:
             history = run_dir / "config_history.jsonl"
