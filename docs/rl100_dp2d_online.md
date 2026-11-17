@@ -121,8 +121,9 @@ remain strict; changing reward, PPO hyperparameters or rollout seed requires a
 new run. V1 checkpoints require their original *complete* configuration,
 including the budget.
 
-The first Ctrl+C requests a stop at the next completed Episode + PPO update,
-then saves a resumable checkpoint. A second Ctrl+C forces interruption.
+The first Ctrl+C requests a stop after the current full on-policy batch
+(which may span multiple complete episodes) and PPO update, then saves a
+resumable checkpoint. A second Ctrl+C forces interruption.
 An abrupt process crash discards all in-memory, not-yet-updated on-policy
 data; Resume starts with an empty buffer and fresh sampling from the last
 durable update. This is intentional; mid-episode replay/restore is unsupported.
