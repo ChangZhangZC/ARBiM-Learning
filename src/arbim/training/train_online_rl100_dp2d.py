@@ -295,7 +295,12 @@ def run(config: dict[str, Any]) -> Path:
     progress = None
     run_start = time.perf_counter()
     try:
-        environment = create_duobench_env(cfg["env"])
+        rng = _rng_state()
+        try:
+            environment = create_duobench_env(cfg["env"])
+        finally:
+            # Reconstructing MuJoCo must not advance the resumed policy RNG.
+            _restore_rng(rng)
         adapter = DuoBenchAdapter(
             environment, spec, cfg["env"]["camera_map"],
             binarize_state_gripper=cfg["env"].get("binarize_state_gripper", True),
