@@ -29,7 +29,9 @@ from arbim.rl.online.checkpoint import (
 from arbim.rl.online.policy_adapter import validate_online_policy
 from arbim.rl.online.ppo_bridge import build_online_ppo, update_online_ppo
 from arbim.rl.online.rollout import collect_online_episode
-from arbim.rl.online.telemetry import OnlineTelemetry, native_ratio_summary
+from arbim.rl.online.telemetry import (
+    OnlineTelemetry, native_ratio_summary, append_native_ratio_records,
+)
 from arbim.rl.rewards.duobench_hinge_chest import build_reward_evaluator
 
 
@@ -270,8 +272,6 @@ def run(config: dict[str, Any]) -> Path:
         )
     finally:
         _restore_rng(rng)
-    if settings["enable_ratio_logging"]:
-        ppo.set_ratio_log_dir(str(run_dir / "diagnostics"))
     logger.message(f"[ONLINE] run={run_dir}")
     logger.message(
         f"[INIT] actor=RL1002D H={span} K={policy.num_inference_steps} "
@@ -355,9 +355,9 @@ def run(config: dict[str, Any]) -> Path:
             metrics = update_online_ppo(ppo, buffer, total_steps=env_steps)
             update_elapsed = time.perf_counter() - update_start
             ratio_metrics = native_ratio_summary(ppo) if settings["enable_ratio_logging"] else {}
-            if settings["enable_ratio_logging"]:
-                ppo.flush_ratio_logs(force=True)
             updates += 1
+            if settings["enable_ratio_logging"]:
+                append_native_ratio_records(ppo, run_dir, updates=updates, env_steps=env_steps)
             buffer.clear()
             ppo._policy.eval()
             ppo.set_old_policy()
