@@ -28,7 +28,7 @@ policy:
   num_inference_steps: null
 
 ppo:
-  max_updates: 1       # total PPO update cycles; set 10000 for a full run
+  max_updates: 10000   # total PPO update cycles (NOT environment steps)
   ratio_mode: chunk_joint # chunk_joint; per_action_step ONLY if n_action_steps=1
   batch_size: 32          # approximate transitions per update; finish each episode first
   mini_batch_size: 8
