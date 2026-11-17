@@ -107,6 +107,7 @@ def evaluate_episodes(
     record_video: bool = True,
     video_fps: float = 30.0,
     video_source: str = "policy",
+    verbose: bool = True,
 ) -> dict[str, Any]:
     """Run sequential episodes reusing Policy and environment.
 
@@ -197,7 +198,8 @@ def evaluate_episodes(
                 f"stage={record['final_stage']} steps={record['episode_steps']} "
                 f"return={record['episode_return']:.4f} stop={record['stop_reason']}"
             )
-            print(message, flush=True)
+            if verbose:
+                print(message, flush=True)
             log_file.write(message + "\n")
             log_file.flush()
 
@@ -205,7 +207,8 @@ def evaluate_episodes(
     with (folder / "summary.json").open("w", encoding="utf-8") as stream:
         json.dump(summary, stream, indent=2, ensure_ascii=False, allow_nan=False)
         stream.write("\n")
-    print(json.dumps(summary, indent=2, ensure_ascii=False), flush=True)
+    if verbose:
+        print(json.dumps(summary, indent=2, ensure_ascii=False), flush=True)
     return summary
 
 
