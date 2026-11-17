@@ -291,25 +291,16 @@ def run(config: dict[str, Any], *, legacy_config: dict[str, Any] | None = None) 
         updates, episodes, env_steps = restore_online_checkpoint(ppo, payload)
         if _budget_reached(cfg, updates):
             raise ValueError("Online run already reached its configured training budget.")
-        previous_config = yaml.safe_load((run_dir / "config_resolved.yaml").read_text(encoding="utf-8"))
-        if previous_config != frozen:
-            history = run_dir / "config_history.jsonl"
-            entry = {
-                "changed_at": datetime.now().isoformat(),
-                "at_updates": updates, "at_env_steps": env_steps,
-                "old_budget": previous_config["rollout"],
-                "new_budget": frozen["rollout"],
-                "old_logging": previous_config.get("logging"),
-                "new_logging": frozen.get("logging"),
-            }
-            with history.open("a", encoding="utf-8") as out:
-                out.write(json.dumps(entry, ensure_ascii=False, allow_nan=False) + "\n")
-            _save_config(run_dir / "config_resolved.yaml", frozen)
+        previous_config = yaml.safe_load(
+            (run_dir / "config_resolved.yaml").read_text(encoding="utf-8")
+        )
+        pending_config = previous_config if previous_config != frozen else None
     else:
         run_dir = _new_run_dir(cfg)
         _save_config(run_dir / "config_resolved.yaml", frozen)
         _write_run_meta(run_dir, frozen, il_path)
         updates, episodes, env_steps = 0, 0, 0
+        pending_config = None
 
     if _budget_reached(cfg, updates):
         raise ValueError("Online run already reached its configured training budget.")
@@ -464,6 +455,24 @@ def run(config: dict[str, Any], *, legacy_config: dict[str, Any] | None = None) 
                     checkpoint_dir / "last.ckpt", ppo, config=frozen, updates=updates,
                     episode_count=episodes, env_steps=env_steps, original_checkpoint=il_path,
                 )
+                if pending_config is not None:
+                    # Write the migrated YAML only after a valid new-format
+                    # checkpoint exists. A crash before this boundary leaves
+                    # the old YAML + old checkpoint resumable.
+                    entry = {
+                        "changed_at": datetime.now().isoformat(),
+                        "at_updates": updates, "at_env_steps": env_steps,
+                        "old_ppo_budget": pending_config.get("ppo", {}).get(
+                            "max_updates", pending_config.get("rollout", {}).get("max_updates")
+                        ),
+                        "new_ppo_budget": frozen["ppo"]["max_updates"],
+                        "old_logging": pending_config.get("logging"),
+                        "new_logging": frozen.get("logging"),
+                    }
+                    with (run_dir / "config_history.jsonl").open("a", encoding="utf-8") as out:
+                        out.write(json.dumps(entry, ensure_ascii=False, allow_nan=False) + "\n")
+                    _save_config(run_dir / "config_resolved.yaml", frozen)
+                    pending_config = None
                 snapshot = checkpoint_dir / f"update_{updates:06d}.ckpt"
                 save_inference_snapshot(
                     snapshot, ppo, il_contract=il_contract,
