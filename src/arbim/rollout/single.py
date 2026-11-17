@@ -108,12 +108,12 @@ def run_single_episode(
             # HingeChest's native terminated=True comes from success itself.
             # The pinned RCS simulation can continue stepping after this signal.
             if grace_complete or truncated or (terminated and not step_success) or episode_steps >= max_env_steps:
-                if grace_complete:
-                    stop_reason = "success"
-                elif truncated:
+                if truncated:
                     stop_reason = "truncated"
                 elif terminated and not step_success:
                     stop_reason = "terminated"
+                elif grace_complete:
+                    stop_reason = "success"
                 else:
                     stop_reason = "max_env_steps"
                 should_stop = True
