@@ -5,6 +5,7 @@ TensorBoard alone uses the generic IL MetricLogger, with its JSONL sink off.
 """
 from __future__ import annotations
 
+import csv
 import json
 import math
 from pathlib import Path
@@ -107,3 +108,31 @@ def native_ratio_summary(ppo: Any) -> dict[str, float]:
         / sum(key in row for row in records)
         for key in keys if any(key in row for row in records)
     }
+
+def append_native_ratio_records(
+    ppo: Any, run_dir: Path, *, updates: int, env_steps: int,
+) -> None:
+    """Persist upstream diagnostic records without its CSV-overwrite behavior.
+
+    The pinned native flush_ratio_logs() opens CSV with mode='w' after each
+    internal prune; use an append-only external sink while retaining native
+    ratio calculations exactly as recorded.
+    """
+    rows = getattr(ppo, "_ratio_records", None)
+    if not rows:
+        return
+    folder = run_dir / "diagnostics"
+    folder.mkdir(parents=True, exist_ok=True)
+    csv_path = folder / "ratio_stats.csv"
+    keys = ["update", "env_steps", *rows[0].keys()]
+    with csv_path.open("a", newline="", encoding="utf-8") as out:
+        writer = csv.DictWriter(out, fieldnames=keys)
+        if out.tell() == 0:
+            writer.writeheader()
+        writer.writerows(
+            {"update": updates, "env_steps": env_steps, **row} for row in rows
+        )
+    rows.clear()
+    delta_cache = getattr(ppo, "_delta_cache", None)
+    if isinstance(delta_cache, list):
+        delta_cache.clear()
