@@ -286,7 +286,7 @@ def run(config: dict[str, Any]) -> Path:
         if stop_requested:
             raise KeyboardInterrupt("Second Ctrl+C forced interruption.")
         stop_requested = True
-        logger.message("[STOP] Requested; finish current complete episode/update, then checkpoint.")
+        logger.message("[STOP] Requested; finish current on-policy batch/update, then checkpoint.")
 
     signal.signal(signal.SIGINT, _request_stop)
     environment = None
@@ -346,8 +346,8 @@ def run(config: dict[str, Any]) -> Path:
                 )
                 if progress is not None:
                     progress.update(min(result["episode_steps"], total_budget - progress.n))
-                if stop_requested:
-                    break
+                # Keep collecting complete episodes until the PPO batch is valid.
+                # Stopping early can produce a one-sample advantage/std NaN.
 
             ppo._policy.train()
             ppo._policy.obs_encoder.eval()
