@@ -9,6 +9,7 @@ import copy
 import hashlib
 import json
 import os
+import re
 import tempfile
 from pathlib import Path
 from typing import Any, Mapping
@@ -38,27 +39,44 @@ def online_resume_contract(config: Mapping[str, Any]) -> dict[str, Any]:
 
     The run directory's config_resolved.yaml is the authoritative full config.
     """
-    rollout = config["rollout"]
     policy = copy.deepcopy(config["policy"])
     policy.pop("device", None)  # runtime device is not an algorithm change
+    ppo = copy.deepcopy(config["ppo"])
+    ppo.pop("max_updates", None)  # training budget can increase on Resume
     return {
+        "env": copy.deepcopy(config["env"]),  # includes common episode limit
+        "policy": policy,
+        "ppo": ppo,
+        "reward": copy.deepcopy(config["reward"]),
+        "rollout": {"seed": config["rollout"]["seed"]},
+    }
+
+
+def _digest(contract: Mapping[str, Any]) -> str:
+    payload = json.dumps(
+        contract, sort_keys=True, separators=(",", ":"), allow_nan=False,
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _contract_digest(config: Mapping[str, Any]) -> str:
+    return _digest(online_resume_contract(config))
+
+
+def _legacy_contract_digest(config: Mapping[str, Any]) -> str:
+    """Original Task 7 V2 contract, needed to read pre-reorganization checkpoints."""
+    policy = copy.deepcopy(config["policy"])
+    policy.pop("device", None)
+    return _digest({
         "env": copy.deepcopy(config["env"]),
         "policy": policy,
         "ppo": copy.deepcopy(config["ppo"]),
         "reward": copy.deepcopy(config["reward"]),
         "rollout": {
-            "max_env_steps": rollout["max_env_steps"],
-            "seed": rollout["seed"],
+            "max_env_steps": config["rollout"]["max_env_steps"],
+            "seed": config["rollout"]["seed"],
         },
-    }
-
-
-def _contract_digest(config: Mapping[str, Any]) -> str:
-    payload = json.dumps(
-        online_resume_contract(config), sort_keys=True,
-        separators=(",", ":"), allow_nan=False,
-    ).encode("utf-8")
-    return hashlib.sha256(payload).hexdigest()
+    })
 
 
 def save_online_checkpoint(
@@ -88,6 +106,7 @@ def save_online_checkpoint(
 def read_online_checkpoint(
     path: str | Path, *, config: Mapping[str, Any],
     original_checkpoint: str,
+    legacy_config: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     payload = torch.load(Path(path), map_location="cpu", weights_only=True)
     version = payload.get("format_version")
@@ -96,11 +115,14 @@ def read_online_checkpoint(
     if payload.get("original_checkpoint") != original_checkpoint:
         raise ValueError("Online Resume original IL checkpoint path differs.")
     if version == 1:
-        # Preserve the exact contract of existing Task 6 smoke checkpoints.
-        if payload.get("config") != dict(config):
+        # Previous V1 checkpoints embedded the full pre-reorganization YAML.
+        expected = dict(legacy_config) if legacy_config is not None else dict(config)
+        if payload.get("config") != expected:
             raise ValueError("Online V1 Resume requires its original complete configuration.")
     elif payload.get("contract_digest") != _contract_digest(config):
-        raise ValueError("Online Resume algorithm/environment contract differs.")
+        # Allow the original Task 7 V2 digest during schema migration only.
+        if legacy_config is None or payload["contract_digest"] != _legacy_contract_digest(legacy_config):
+            raise ValueError("Online Resume algorithm/environment contract differs.")
     for key in ("updates", "episodes", "env_steps"):
         if type(payload.get(key)) is not int or payload[key] < 0:
             raise ValueError(f"Invalid Online checkpoint counter: {key}.")
@@ -127,7 +149,8 @@ def restore_online_checkpoint(ppo: Any, payload: Mapping[str, Any]) -> tuple[int
 
 
 def save_inference_snapshot(
-    path: str | Path, ppo: Any, *, il_contract: Mapping[str, Any], env_steps: int,
+    path: str | Path, ppo: Any, *, il_contract: Mapping[str, Any],
+    updates: int, env_steps: int, episodes: int,
 ) -> None:
     """Existing ARBiM inference loader accepts policy_snapshot, format_version=2."""
     contract = copy.deepcopy(dict(il_contract))
@@ -138,7 +161,9 @@ def save_inference_snapshot(
     _atomic_save(path, {
         "format_version": 2, "checkpoint_role": "policy_snapshot",
         "selected_weights": "raw", "policy": ppo._policy.state_dict(),
-        "global_step": int(env_steps), "contract": contract,
+        "global_step": int(updates), "ppo_updates": int(updates),
+        "env_steps": int(env_steps), "episodes": int(episodes),
+        "contract": contract,
     })
 
 
@@ -147,6 +172,17 @@ def prune_policy_snapshots(folder: str | Path, keep_last: int) -> None:
     if type(keep_last) is not int or keep_last < 1:
         raise ValueError("checkpoint.keep_last must be positive.")
     directory = Path(folder)
-    snapshots = sorted(directory.glob("step_*.ckpt"))
-    for stale in snapshots[:-keep_last]:
+    # Old Task 7 snapshots use environment steps; new ones use PPO update ids.
+    # Treat legacy files as earlier than newly created update snapshots.
+    legacy = sorted(
+        (p for p in directory.glob("step_*.ckpt")
+         if re.fullmatch(r"step_\\d+\\.ckpt", p.name)),
+        key=lambda p: int(p.stem.split("_")[1]),
+    )
+    current = sorted(
+        (p for p in directory.glob("update_*.ckpt")
+         if re.fullmatch(r"update_\\d+\\.ckpt", p.name)),
+        key=lambda p: int(p.stem.split("_")[1]),
+    )
+    for stale in (legacy + current)[:-keep_last]:
         stale.unlink()
