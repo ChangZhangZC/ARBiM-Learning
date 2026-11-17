@@ -56,7 +56,7 @@ def build_online_ppo(policy: Any, settings: Mapping[str, Any]):
         use_grad_clip=True, is_clip_value=bool(cfg["clip_value"]),
         use_lr_decay=bool(cfg["linear_lr_decay"]),
         v_encoder=False, iterations=0,
-        max_train_steps=int(cfg["max_train_steps"]),
+        max_train_steps=int(cfg.get("max_train_steps", 100000)),  # native interface; linear LR decay disabled
         enable_ratio_logging=bool(cfg.get("enable_ratio_logging", False)),
         ratio_log_every_updates=int(cfg.get("ratio_log_every_updates", 10)),
         ratio_plot_on_final_flush=False,
