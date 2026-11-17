@@ -9,7 +9,7 @@ import yaml
 
 from arbim.rl.online.telemetry import (
     OnlineTelemetry, append_native_ratio_records,
-    reconcile_online_metrics, native_ratio_summary,
+    reconcile_online_metrics, reconcile_native_ratio_csv, native_ratio_summary,
 )
 from arbim.training.train_online_rl100_dp2d import (
     _budget_reached, _new_run_dir, _frozen_config, validate_config,
@@ -117,3 +117,22 @@ def test_append_upstream_ratio_records_across_updates(tmp_path):
     assert len(rows) == 3
     assert rows[1].startswith("1,32,")
     assert rows[2].startswith("2,64,")
+
+
+def test_ratio_resume_archives_uncommitted_updates(tmp_path):
+    from csv import DictReader
+    folder = tmp_path / "diagnostics"
+    folder.mkdir()
+    path = folder / "ratio_stats.csv"
+    path.write_text(
+        "update,env_steps,ratio_mean\n"
+        "1,32,1.1\n"
+        "2,64,1.2\n", encoding="utf-8"
+    )
+    reconcile_native_ratio_csv(path, updates=1, env_steps=32)
+    with path.open() as handle:
+        kept = list(DictReader(handle))
+    with (folder / "ratio.uncommitted.csv").open() as handle:
+        discarded = list(DictReader(handle))
+    assert kept == [{"update": "1", "env_steps": "32", "ratio_mean": "1.1"}]
+    assert discarded == [{"update": "2", "env_steps": "64", "ratio_mean": "1.2"}]
