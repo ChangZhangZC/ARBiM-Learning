@@ -334,7 +334,7 @@ def run(config: dict[str, Any]) -> Path:
                             "return_raw": result["env_return"],
                             "return_train": result["train_return"],
                             "success": int(result["success"]),
-                            "stage": result["final_stage"] if isinstance(result["final_stage"], (int, float)) else 0,
+                            **({"stage": result["final_stage"]} if isinstance(result["final_stage"], (int, float)) else {}),
                             "episode_steps": result["episode_steps"],
                             "transitions": result["transitions"],
                         },
@@ -424,6 +424,7 @@ def run(config: dict[str, Any]) -> Path:
                         record_video=evaluation_cfg["record_video"],
                         video_fps=evaluation_cfg["video_fps"],
                         video_source=evaluation_cfg["video_source"],
+                        verbose=False,
                     )
                 finally:
                     _restore_rng(rng)
@@ -511,8 +512,7 @@ def main() -> None:
         config["rollout"]["max_total_env_steps"] = args.max_total_env_steps
     if args.no_eval:
         config["evaluation"]["enabled"] = False
-    result = run(config)
-    print(f"[ONLINE] completed run: {result}", flush=True)
+    run(config)
 
 
 if __name__ == "__main__":
