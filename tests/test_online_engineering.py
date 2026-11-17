@@ -12,7 +12,7 @@ from arbim.rl.online.telemetry import (
     reconcile_online_metrics, reconcile_native_ratio_csv, native_ratio_summary,
 )
 from arbim.training.train_online_rl100_dp2d import (
-    _budget_reached, _new_run_dir, _frozen_config, validate_config,
+    _budget_reached, _new_run_dir, _frozen_config, _file_sha256, validate_config,
 )
 
 
@@ -136,3 +136,12 @@ def test_ratio_resume_archives_uncommitted_updates(tmp_path):
         discarded = list(DictReader(handle))
     assert kept == [{"update": "1", "env_steps": "32", "ratio_mean": "1.1"}]
     assert discarded == [{"update": "2", "env_steps": "64", "ratio_mean": "1.2"}]
+
+
+def test_initial_il_checksum_is_content_sensitive(tmp_path):
+    import hashlib
+    path = tmp_path / "last.ckpt"
+    path.write_bytes(b"original IL")
+    assert _file_sha256(path) == hashlib.sha256(b"original IL").hexdigest()
+    path.write_bytes(b"changed IL")
+    assert _file_sha256(path) != hashlib.sha256(b"original IL").hexdigest()
