@@ -2,6 +2,9 @@
 from __future__ import annotations
 
 import math
+import numbers
+
+import numpy as np
 from collections.abc import Mapping
 from typing import Any
 
@@ -19,8 +22,10 @@ class HingeChestReward(RewardEvaluator):
         if not math.isfinite(r):
             raise ValueError("Environment reward must be finite.")
         stage = info.get("stage")
-        if stage is not None and (isinstance(stage, bool) or not isinstance(stage, (int, float))):
+        if stage is not None and (isinstance(stage, bool) or not isinstance(stage, (numbers.Real, np.integer, np.floating))):
             raise ValueError("Unexpected Hinge-Chest stage type.")
+        if stage is not None and not math.isfinite(float(stage)):
+            raise ValueError("Hinge-Chest stage must be finite.")
         return RewardResult(
             train_reward=r,
             env_reward=r,

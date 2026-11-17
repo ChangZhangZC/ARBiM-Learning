@@ -12,7 +12,6 @@ from __future__ import annotations
 import argparse
 import copy
 import json
-import random
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
@@ -108,7 +107,7 @@ def run(config: dict[str, Any]) -> Path:
     seed = int(rollout_cfg["seed"])
     _seed_everything(seed)
 
-    policy, spec, model_cfg = load_inference_policy(
+    policy, spec, _ = load_inference_policy(
         il_path, device=policy_cfg["device"], weights=policy_cfg.get("weights", "raw"),
         n_action_steps=policy_cfg.get("n_action_steps"),
         num_inference_steps=policy_cfg.get("num_inference_steps"),

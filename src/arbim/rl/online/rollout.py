@@ -5,7 +5,6 @@ from collections.abc import Mapping
 from typing import Any
 
 import numpy as np
-import torch
 
 from arbim.data.online_adapter import (
     discounted_chunk_reward, initial_history,
