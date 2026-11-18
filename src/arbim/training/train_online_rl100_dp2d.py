@@ -229,10 +229,11 @@ def _linear_lr_total_steps(cfg: Mapping[str, Any], action_span: int) -> int:
         raise ValueError("Effective action span must be positive.")
     episode_steps = int(cfg["env"]["max_episode_steps"])
     transitions_per_episode = math.ceil(episode_steps / action_span)
-    transitions_per_update = (
-        math.ceil(int(cfg["ppo"]["batch_size"]) / transitions_per_episode)
-        * transitions_per_episode
-    )
+    # We collect *whole* episodes until >= batch_size. With early terminations,
+    # the buffer can hold batch_size - 1 transitions before its final episode,
+    # which can contribute up to transitions_per_episode more decisions.
+    # This is a safe upper bound; rounding to episode multiples is NOT.
+    transitions_per_update = int(cfg["ppo"]["batch_size"]) + transitions_per_episode - 1
     ppo = cfg["ppo"]
     if "max_steps" in ppo:
         min_steps_per_update = count_ppo_steps(
