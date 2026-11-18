@@ -43,7 +43,9 @@ def build_online_ppo(policy: Any, settings: Mapping[str, Any]):
         None if share_encoder else deepcopy(policy.obs_encoder),
         feature_dim, int(cfg["value_hidden_dim"]),
         int(cfg["value_depth"]), n_obs_steps=policy.n_obs_steps,
-        fix_encoder=fix_encoder,
+        # RL-100 ValueLearner initializes its independent Value Encoder as
+        # trainable even if the Actor Encoder is frozen.
+        fix_encoder=False,
     ).to(device)
     ppo_args = SimpleNamespace(
         batch_size=int(cfg["batch_size"]),
@@ -91,7 +93,7 @@ def build_online_ppo(policy: Any, settings: Mapping[str, Any]):
     bridge._policy.obs_encoder.requires_grad_(not fix_encoder)
     bridge._policy.obs_encoder.eval()  # native RL-100 keeps Online encoder in eval mode
     if not share_encoder:
-        bridge.critic._obs_encoder.requires_grad_(not fix_encoder)
+        bridge.critic._obs_encoder.requires_grad_(True)
         bridge.critic._obs_encoder.eval()
         if bridge.critic._obs_encoder is bridge._policy.obs_encoder:
             raise RuntimeError("Independent Critic must own a distinct Encoder.")
