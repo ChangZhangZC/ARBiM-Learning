@@ -19,13 +19,16 @@ class OnlinePPOBuffer:
     def __init__(
         self, *, spec: Mapping[str, Any], n_obs_steps: int,
         prediction_steps: int, num_inference_steps: int, action_dim: int,
-        device: torch.device | str,
+        device: torch.device | str, action_span: int | None = None,
     ) -> None:
         self.spec = spec
         self.n_obs_steps = n_obs_steps
         self.prediction_steps = prediction_steps
         self.num_inference_steps = num_inference_steps
         self.action_dim = action_dim
+        self.action_span = action_span if action_span is not None else prediction_steps
+        if not 1 <= self.action_span <= prediction_steps:
+            raise ValueError("action_span must be within the predicted action horizon.")
         self.device = torch.device(device)
         self.records: list[dict[str, Any]] = []
 
@@ -61,6 +64,7 @@ class OnlinePPOBuffer:
     def store(
         self, obs: Mapping[str, Any], action: Any, a_logprob: Any,
         reward: float, next_obs: Mapping[str, Any], done: bool, dw: bool,
+        *, executed_steps: int | None = None,
     ) -> None:
         """Same seven positional fields as the upstream replay-buffer store()."""
         x = self._cpu_numpy(action)
@@ -73,11 +77,20 @@ class OnlinePPOBuffer:
             raise ValueError("Nonfinite online transition.")
         if bool(dw) and not bool(done):
             raise ValueError("dw=True requires done=True (true termination).")
+        steps = self.action_span if executed_steps is None else executed_steps
+        if type(steps) is not int or not 1 <= steps <= self.action_span:
+            raise ValueError("executed_steps must be in [1, action_span].")
         self.records.append({
             "obs": self._window(obs), "action": x.copy(), "logprob": lp.copy(),
             "reward": float(reward), "next_obs": self._window(next_obs),
-            "done": bool(done), "dw": bool(dw),
+            "done": bool(done), "dw": bool(dw), "executed_steps": steps,
         })
+
+    def has_partial_spans(self) -> bool:
+        return any(record["executed_steps"] != self.action_span for record in self.records)
+
+    def executed_spans(self) -> list[int]:
+        return [record["executed_steps"] for record in self.records]
 
     def numpy_to_tensor(self):
         """Return exactly (s, a, a_logprob, r, s_, dw, done) for native PPO."""
