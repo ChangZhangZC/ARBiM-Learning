@@ -6,6 +6,7 @@ checkpoint reconstruction and shared-versus-independent inputs be checked.
 """
 from __future__ import annotations
 
+from copy import deepcopy
 from pathlib import Path
 
 import pytest
@@ -191,3 +192,24 @@ def test_four_modes_full_checkpoint_restores_encoder_state(tmp_path, fix_encoder
         p.requires_grad is (not fix_encoder)
         for p in restored._policy.obs_encoder.parameters()
     )
+
+@pytest.mark.parametrize("fix_encoder,share_encoder", [
+    (False, False), (False, True), (True, False), (True, True),
+])
+def test_resume_rejects_encoder_mode_changes(tmp_path, fix_encoder, share_encoder):
+    cfg = config()
+    cfg["ppo"]["fix_encoder"] = fix_encoder
+    cfg["ppo"]["share_encoder"] = share_encoder
+    target_path = tmp_path / "last.ckpt"
+    save_online_checkpoint(
+        target_path, create_bridge(cfg), config=cfg, updates=1,
+        episode_count=2, env_steps=32, decision_steps=8,
+        original_checkpoint="/tmp/test/il.ckpt",
+    )
+    for changed_key in ("fix_encoder", "share_encoder"):
+        edited = deepcopy(cfg)
+        edited["ppo"][changed_key] = not edited["ppo"][changed_key]
+        with pytest.raises(ValueError, match="contract"):
+            read_online_checkpoint(
+                target_path, config=edited, original_checkpoint="/tmp/test/il.ckpt",
+            )
