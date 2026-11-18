@@ -66,8 +66,8 @@ evaluation:
   video_fps: 30
 
 checkpoint:
-  every_updates: 1
-  keep_last: 3           # policy-only update_*.ckpt; last.ckpt always retained
+  every_steps: 1000      # PPO mini-batch steps, same unit as ppo.max_steps; save after full PPO update
+  keep_last: 6           # policy-only update_*.ckpt; last.ckpt always retained
   save_on_finish: true
   resume: null           # prefer --resume <run_dir> CLI
 logging:

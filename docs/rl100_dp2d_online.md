@@ -67,7 +67,8 @@ evaluation:
   seed: 100042           # fixed seeds across checkpoint comparisons
   num_episodes: 30       # experiment default, matching native Online example
 checkpoint:
-  every_updates: 1      # recoverable after each complete PPO update
+  every_steps: 1000      # PPO mini-batch passes; save at next complete update
+  keep_last: 6           # policy-only snapshots; last.ckpt is always retained
 ```
 
 A more concise CLI override is also supported:
@@ -90,7 +91,7 @@ episode (the last chunk executes only 20 environment steps), requiring 64 comple
 **1,024** transitions, or 32,000 environment steps per cycle. Five epochs with `mini_batch_size=128` yield **40 PPO mini-batch steps per cycle**. A 10,000-step budget corresponds to about **250 full cycles** and about **8 million training environment steps** in this no-early-success example, not 10,000 cycles. This is only a
 capacity estimate, NOT a prediction of actual performance or episode length.
 The full 1,024-transition batch is materialized for PPO; confirm host and GPU
-memory before attempting a full training run. The experiment YAML evaluates 30 episodes every 25 complete PPO updates; the resumable checkpoint remains saved after every complete update. Test-only overrides stay in the separate smoke YAML.
+memory before attempting a full training run. The experiment YAML evaluates 30 episodes every 25 complete PPO updates, and saves a resumable checkpoint when cumulative PPO mini-batch steps cross each 1,000-step threshold. Saving waits until the current full PPO update has completed; a checkpoint may therefore be saved slightly after its nominal threshold. Test-only overrides stay in the separate smoke YAML.
 
 `policy.n_action_steps: null` and `policy.num_inference_steps: null` preserve
 the validated IL checkpoint settings. Full chunk V1 uses
@@ -227,9 +228,14 @@ shape/ratio boundaries.
   buffer. Actor optimizer steps additionally multiply by DDIM inference steps; Critic optimizer steps equal PPO mini-batch steps.
 - `env.max_episode_steps`: common per-episode cap used by training rollout
   and evaluation; it need not be divisible by the action chunk length. The final partial chunk uses its actual executed span for GAE.
-- `evaluation.every_updates` / `checkpoint.every_updates`: frequency in PPO
-  updates, not environment steps. Evaluation interactions are excluded from
-  training `env_steps`.
+- `evaluation.every_updates`: frequency in **complete PPO rollout/update cycles**.
+  Evaluation interactions are excluded from training `env_steps`.
+- `checkpoint.every_steps`: frequency in **PPO mini-batch passes**, the same
+  unit as `ppo.max_steps`. A checkpoint is saved at the first *complete*
+  PPO update whose cumulative `ppo_steps` crosses an interval boundary, not
+  during a partially finished PPO update. `checkpoint.every_updates` remains
+  supported only for previously saved runs and retains its historical
+  full-update-cycle semantics. Do not set both keys.
 - `rollout.seed`: training episode seed; independent Eval uses its own seed.
 - Native `ppo.max_train_steps` is a **decision-step LR-schedule horizon**,
   distinct from ARBiM `ppo.max_steps` (and legacy `ppo.max_updates`). Rather than expose a second
