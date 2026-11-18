@@ -189,7 +189,7 @@ def test_initial_il_checksum_is_content_sensitive(tmp_path):
     assert _file_sha256(path) != hashlib.sha256(b"original IL").hexdigest()
 
 
-def test_tensorboard_step_is_ppo_updates_not_environment_steps(tmp_path, monkeypatch):
+def test_tensorboard_step_is_ppo_minibatch_steps_not_rollout_updates(tmp_path, monkeypatch):
     import arbim.rl.online.telemetry as telemetry
 
     seen = []
@@ -208,9 +208,10 @@ def test_tensorboard_step_is_ppo_updates_not_environment_steps(tmp_path, monkeyp
     logger = telemetry.OnlineTelemetry(
         {"jsonl": False, "tensorboard": {"enabled": True}},
         tmp_path, resumed=False, resume_updates=0, resume_env_steps=0,
+        step_axis="ppo_steps", resume_ppo_steps=0,
     )
     logger.event(
-        "ppo", {"event": "ppo", "updates": 3, "episodes": 6, "env_steps": 5952},
+        "ppo", {"event": "ppo", "updates": 3, "ppo_steps": 120, "episodes": 6, "env_steps": 5952},
         summary="[PPO] update=3",
         groups={
             "ppo": {"actor_loss": 0.2},
@@ -218,10 +219,10 @@ def test_tensorboard_step_is_ppo_updates_not_environment_steps(tmp_path, monkeyp
         },
     )
     logger.close()
-    assert ("ppo", 3, {"actor_loss": 0.2}) in seen
-    assert ("progress", 3, {"env_steps": 5952, "ppo_updates": 3}) in seen
+    assert ("ppo", 120, {"actor_loss": 0.2}) in seen
+    assert ("progress", 120, {"env_steps": 5952, "ppo_updates": 3}) in seen
     assert seen[0][1] == 0
-    assert seen[0][2].endswith("/tensorboard")
+    assert seen[0][2].endswith("/tensorboard_ppo_steps")
 
 
 def test_legacy_resume_preserves_old_tensorboard_event_axis(tmp_path, monkeypatch):
@@ -269,8 +270,9 @@ def test_native_chunk_ppo_defaults_and_decision_lr_horizon():
     assert ppo["share_encoder"] is False
     validate_config(cfg)
     # A maximum of 250 full PPO cycles; each can collect up to 1024 decisions.
-    assert _linear_lr_total_steps(cfg, action_span=32) == 256000
-    assert _linear_lr_total_steps(cfg, action_span=16) == 256000
+    # Bound: batch_size + max_episode_decisions - 1 per full rollout/update cycle.
+    assert _linear_lr_total_steps(cfg, action_span=32) == 259750
+    assert _linear_lr_total_steps(cfg, action_span=16) == 263750
 
 
 def test_linear_lr_horizon_uses_minibatch_budget_and_partial_chunks():
@@ -278,11 +280,11 @@ def test_linear_lr_horizon_uses_minibatch_budget_and_partial_chunks():
     cfg["ppo"]["max_steps"] = 80
     cfg["ppo"]["batch_size"] = 32
     cfg["ppo"]["mini_batch_size"] = 8
-    assert _linear_lr_total_steps(cfg, action_span=32) == 32 * 4
+    assert _linear_lr_total_steps(cfg, action_span=32) == 47 * 4
     cfg["ppo"]["batch_size"] = 64
-    assert _linear_lr_total_steps(cfg, action_span=32) == 64 * 2
+    assert _linear_lr_total_steps(cfg, action_span=32) == 79 * 2
     cfg["env"]["max_episode_steps"] = 990
-    assert _linear_lr_total_steps(cfg, action_span=32) == 93 * 2
+    assert _linear_lr_total_steps(cfg, action_span=32) == 94 * 2
 
 
 def test_linear_lr_rejects_bad_config_type():
@@ -290,3 +292,42 @@ def test_linear_lr_rejects_bad_config_type():
     cfg["ppo"]["linear_lr_decay"] = 1
     with pytest.raises(ValueError, match="linear_lr_decay"):
         validate_config(cfg)
+
+
+def test_tensorboard_ppo_step_resume_uses_separate_log_and_purge_axis(tmp_path, monkeypatch):
+    import arbim.rl.online.telemetry as telemetry
+
+    observed = {}
+
+    class FakeLogger:
+        def __init__(self, cfg, run_dir, *, resumed, resume_step):
+            observed["path"] = cfg["logging"]["tensorboard"]["log_dir"]
+            observed["purge"] = resume_step
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(telemetry, "MetricLogger", FakeLogger)
+    (tmp_path / "tensorboard").mkdir()  # old whole-update-indexed events
+    sink = telemetry.OnlineTelemetry(
+        {"jsonl": False, "tensorboard": {"enabled": True}},
+        tmp_path, resumed=True, resume_updates=3, resume_env_steps=500,
+        step_axis="ppo_steps", resume_ppo_steps=120,
+    )
+    sink.close()
+    assert observed["purge"] == 120
+    assert observed["path"].endswith("/tensorboard_ppo_steps")
+
+
+def test_temp_smoke_yaml_is_separate_from_experiment_defaults():
+    base = profile()
+    root = Path(__file__).resolve().parents[1]
+    smoke = yaml.safe_load((root / "configs/online/tmp/rl100_dp2d_hinge_chest_smoke.yaml").read_text())
+    assert base["ppo"]["max_steps"] == 10000
+    assert base["evaluation"]["num_episodes"] == 30
+    assert base["evaluation"]["every_updates"] == 25
+    assert smoke["ppo"]["max_steps"] == 12
+    assert smoke["evaluation"]["num_episodes"] == 2
+    assert smoke["output"]["root"].startswith("/tmp/")
+    smoke["policy"]["checkpoint_path"] = "/tmp/verified/last.ckpt"
+    validate_config(smoke)
