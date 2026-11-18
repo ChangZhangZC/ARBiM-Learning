@@ -143,10 +143,8 @@ python -u -m arbim.training.train_online_rl100_dp2d \
 ```
 
 This automatically loads the run's `config_resolved.yaml` and
-`checkpoints/last.ckpt`. When **linear LR decay is enabled**, `ppo.max_updates`
-determines the LR horizon, so changing it on Resume is rejected by the
-checkpoint contract. An Adaptive-KL run without linear decay can still
-extend its V2 update budget. Device relocation using `--device` is supported;
+`checkpoints/last.ckpt`. When **linear LR decay is enabled**, the configured training budget
+(`ppo.max_steps`, or legacy `ppo.max_updates`) determines the native LR horizon, so changing it on Resume is rejected by the checkpoint contract. An Adaptive-KL run without linear decay can still extend its V2 budget. Device relocation using `--device` is supported;
 algorithm/environment parameters
 remain strict; changing reward, PPO hyperparameters or rollout seed requires a
 new run. V1 checkpoints require their original *complete* configuration,
@@ -187,8 +185,7 @@ not one point per episode. This keeps Resume/purge semantics well defined.
 - `ppo/`: actor and critic losses
 - `lr/`: actual actor/critic optimizer learning rates
 - `eval/`: success rate, mean return/steps/stage with a fixed seed set
-- `progress/`: PPO updates, total chunk decisions, actual batch size, total
-  training environment steps and total episodes
+- `progress/`: PPO mini-batch steps, whole rollout/update cycles, Actor/Critic optimizer steps, chunk decisions, actual batch size, training environment steps and total episodes
 - `system/`: rollout and update/evaluation times, train env steps per second
 - `diagnostics/`: upstream native ratio quantile/mean and logprob delta
 
@@ -232,7 +229,7 @@ shape/ratio boundaries.
   training `env_steps`.
 - `rollout.seed`: training episode seed; independent Eval uses its own seed.
 - Native `ppo.max_train_steps` is a **decision-step LR-schedule horizon**,
-  distinct from ARBiM `ppo.max_updates`. Rather than expose a second
+  distinct from ARBiM `ppo.max_steps` (and legacy `ppo.max_updates`). Rather than expose a second
   ambiguous training budget, the adapter derives it as
   `ceil(max_steps / (K_epochs * ceil(batch_size / mini_batch_size))) *
   ceil(batch_size / ceil(max_episode_steps / n_action_steps)) *
@@ -242,14 +239,12 @@ shape/ratio boundaries.
   update with the cumulative **actual action-chunk decisions** collected,
   capped defensively at the derived horizon. The schedule may therefore
   end with nonzero LR if many episodes terminate early.
-- New Online `last.ckpt` records `decision_steps` in addition to `updates`,
-  `episodes` and `env_steps`. Linear-decay Resume requires this counter,
-  and cannot silently rebase the LR horizon by extending `max_updates`.
+- New Online `last.ckpt` records `decision_steps` and `ppo_steps` in addition to whole-cycle `updates`, `episodes` and `env_steps`. Linear-decay Resume requires the decision counter; new PPO-step-budget Resume also requires its minibatch counter. The LR horizon cannot be silently rebased by changing the training budget.
 - The native RL-100 Chunk Online example uses four parallel environments,
   a 16-step action chunk, an independently trainable Critic Encoder and an
   unfrozen Actor Encoder. ARBiM now uses matching **false/false** Encoder
   modes by default, but keeps a single DuoBench environment and preserves
-  the IL checkpoint's 32-step action chunk. These remaining differences
+  the IL checkpoint's actual action chunk (32 is illustrative, not assumed). These remaining differences
   are explicitly **not yet equivalent**. The Value Head is randomly
   initialized because no offline Q/V checkpoint is available; the
   independent Critic Encoder is instead initialized from IL Actor weights.
