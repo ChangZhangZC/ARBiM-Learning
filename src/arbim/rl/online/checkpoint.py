@@ -34,7 +34,7 @@ def _atomic_save(path: str | Path, payload: dict[str, Any]) -> None:
 
 
 def online_resume_contract(config: Mapping[str, Any]) -> dict[str, Any]:
-    """Hold algorithm/env/rollout semantics fixed; allow operational budget changes.
+    """Hold algorithm/env/rollout semantics fixed; permit budget extension only without linear LR decay.
 
     The run directory's config_resolved.yaml is the authoritative full config.
     """
@@ -154,8 +154,11 @@ def read_online_checkpoint(
         type(payload["decision_steps"]) is not int or payload["decision_steps"] < 0
     ):
         raise ValueError("Invalid Online checkpoint counter: decision_steps.")
-    if config["ppo"].get("linear_lr_decay", False) and "decision_steps" not in payload:
-        raise ValueError("Linear-LR Online Resume requires a saved decision_steps counter.")
+    if config["ppo"].get("linear_lr_decay", False):
+        if "decision_steps" not in payload:
+            raise ValueError("Linear-LR Online Resume requires a saved decision_steps counter.")
+        if payload["decision_steps"] < payload["updates"]:
+            raise ValueError("Linear-LR Online Resume has an inconsistent decision_steps counter.")
     return payload
 
 
