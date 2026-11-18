@@ -39,6 +39,9 @@ class HingeChestReward(RewardEvaluator):
 
 
 def build_reward_evaluator(name: str) -> RewardEvaluator:
-    if name != "env_raw":
-        raise ValueError("Task 6 V1 supports reward.mode='env_raw' only.")
-    return HingeChestReward()
+    if name == "env_raw":
+        return HingeChestReward()
+    if name == "stage_increment":
+        from arbim.rl.rewards.stage_increment import StageIncrementReward
+        return StageIncrementReward()
+    raise ValueError("Supported reward modes: env_raw, stage_increment.")
