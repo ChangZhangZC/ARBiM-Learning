@@ -48,3 +48,10 @@ Here T = horizon - n_obs_steps + 1 when no_pre_action=True, while H_exec = effec
 4. Native actor/critic gradient updates and finite loss; frozen vision encoder stays fixed.
 5. GPU/MuJoCo single rollout -> PPO update -> independent fixed-seed evaluation -> snapshot -> resume.
 6. Original IL training/inference/evaluation regression and no upstream submodule changes.
+
+## Task 6 Online PPO mini-batch counter and partial execution
+
+- New training budgets use `ppo.max_steps`: completed native mini-batch passes, `K_epochs * ceil(actual_batch_size / mini_batch_size)` per full PPO update. Actor optimizer steps additionally multiply by DDIM inference steps; the Critic runs one optimizer step per mini-batch. Legacy `ppo.max_updates` retains its original whole-cycle meaning.
+- `env.max_episode_steps` is independent of the action chunk length. The Online buffer records actual executed action spans separately from the complete sampled DDIM trajectory. A partial chunk invokes upstream's existing `precomputed` Advantage/Value Target interface with `gamma ** executed_steps`; the PPO loss remains native.
+- Approx-KL and clip fraction are recorded by a diagnostic-only native PPO subclass mixin. No upstream file or PPO loss is changed and no runtime monkey patch is used.
+- New resumable checkpoints store `ppo_steps`; the source IL Scheduler configuration (including DDIM standard deviation bounds) is reported without modification.
