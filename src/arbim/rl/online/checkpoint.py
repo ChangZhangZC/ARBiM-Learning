@@ -194,6 +194,7 @@ def restore_online_checkpoint(ppo: Any, payload: Mapping[str, Any]) -> tuple[int
 def save_inference_snapshot(
     path: str | Path, ppo: Any, *, il_contract: Mapping[str, Any],
     updates: int, env_steps: int, episodes: int,
+    ppo_steps: int | None = None,
 ) -> None:
     """Existing ARBiM inference loader accepts policy_snapshot, format_version=2."""
     contract = copy.deepcopy(dict(il_contract))
@@ -206,6 +207,7 @@ def save_inference_snapshot(
         "selected_weights": "raw", "policy": ppo._policy.state_dict(),
         "global_step": int(updates), "ppo_updates": int(updates),
         "env_steps": int(env_steps), "episodes": int(episodes),
+        **({"ppo_steps": int(ppo_steps)} if ppo_steps is not None else {}),
         "contract": contract,
     })
 
