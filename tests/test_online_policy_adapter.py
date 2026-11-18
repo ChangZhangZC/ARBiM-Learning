@@ -20,7 +20,8 @@ class FakePolicy(torch.nn.Module):
         self.num_inference_steps = k
 
     def all_step_action_logprob(self, obs, fix_encoder=True, use_cm=False):
-        assert fix_encoder and not use_cm
+        assert not use_cm
+        self.last_fix_encoder = fix_encoder
         b = obs["agent_pos"].shape[0]
         x = torch.arange((self.num_inference_steps + 1) * b * 4 * 16).float().reshape(
             self.num_inference_steps + 1, b, 4, 16
@@ -49,3 +50,13 @@ def test_single_step_supported_with_original_per_action_ratio():
 def test_upstream_multistep_ratio_bug_is_not_silently_patched():
     with pytest.raises(ValueError, match="H>1"):
         validate_online_policy(FakePolicy(steps=4), "per_action_step")
+
+
+@pytest.mark.parametrize("fix_encoder", [False, True])
+def test_rollout_forwards_actor_encoder_mode_to_native_sampler(fix_encoder):
+    policy = FakePolicy()
+    result = sample_online(
+        policy, {"agent_pos": torch.zeros(1, 2, 16)}, fix_encoder=fix_encoder
+    )
+    assert result.action.shape == (1, 4, 16)
+    assert policy.last_fix_encoder is fix_encoder
