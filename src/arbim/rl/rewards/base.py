@@ -13,6 +13,9 @@ class RewardResult:
 
 
 class RewardEvaluator:
+    def reset(self, info: Mapping[str, Any]) -> None:
+        """Optional per-episode hook; stateless rewards need no reset."""
+
     def evaluate(
         self, reward: float, info: Mapping[str, Any],
         *, terminated: bool, truncated: bool,
