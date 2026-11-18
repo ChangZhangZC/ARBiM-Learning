@@ -6,6 +6,7 @@ import torch
 from arbim.rl.online import rollout
 from arbim.rl.online.policy_adapter import OnlineSample
 from arbim.rl.rewards.duobench_hinge_chest import HingeChestReward
+from arbim.rl.rewards.stage_increment import StageIncrementReward
 
 
 class FakePolicy(torch.nn.Module):
@@ -145,3 +146,31 @@ def test_rollout_passes_actor_freeze_mode_to_native_sampler(patch_policy, monkey
     )
     assert result["transitions"] == 1
     assert observed == [fix_encoder]
+
+
+class StageProgressAdapter(FakeAdapter):
+    def reset(self, *, seed=None):
+        obs, _ = super().reset(seed=seed)
+        return obs, {"stage": 0, "max_stage": 3, "success": False}
+
+    def step(self, action):
+        obs, _, _, _, _ = super().step(action)
+        stage = min(self.step_count, 3)
+        return obs, stage / 3, stage == 3, False, {
+            "stage": stage, "max_stage": 3, "success": stage == 3,
+        }
+
+
+def test_online_rollout_stage_increment_resets_per_episode(patch_policy):
+    evaluator = StageIncrementReward()
+    for _ in range(2):
+        buffer = FakeBuffer()
+        result = rollout.collect_online_episode(
+            StageProgressAdapter(patch_policy, terminal_step=3), FakePolicy(),
+            patch_policy, buffer, evaluator, gamma=1.0, max_env_steps=8,
+        )
+        assert result["success"]
+        assert result["episode_steps"] == 3
+        assert result["train_return"] == 7
+        assert result["env_return"] == 2
+        assert buffer.records[0][3] == 7

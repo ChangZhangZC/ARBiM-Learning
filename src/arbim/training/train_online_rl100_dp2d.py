@@ -47,8 +47,10 @@ def validate_config(cfg: Mapping[str, Any]) -> None:
         raise ValueError("Online Task 6 V1 targets DuoBench hinge_chest.")
     if not cfg["policy"].get("checkpoint_path"):
         raise ValueError("Set policy.checkpoint_path or pass --checkpoint.")
-    if cfg["reward"].get("mode") != "env_raw":
-        raise ValueError("Task 6 V1 supports only native env_raw reward.")
+    if cfg["reward"].get("mode") not in ("env_raw", "stage_increment"):
+        raise ValueError("Supported reward modes: env_raw, stage_increment.")
+    if set(cfg["reward"]) != {"mode"}:
+        raise ValueError("reward must contain only mode; reward weights live in Python.")
     ppo = cfg["ppo"]
     if ("max_steps" in ppo) == ("max_updates" in ppo):
         raise ValueError("Set exactly one of ppo.max_steps (PPO minibatches) or legacy ppo.max_updates.")
