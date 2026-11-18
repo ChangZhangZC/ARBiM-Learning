@@ -47,6 +47,15 @@ def test_default_config_is_strict(tmp_path):
         "configs/online/rl100_dp2d_hinge_chest.yaml").read_text())
     cfg["policy"]["checkpoint_path"] = "/verified/hinge_chest/best.ckpt"
     validate_config(cfg)
+    for fix in (False, True):
+        for share in (False, True):
+            cfg["ppo"]["fix_encoder"] = fix
+            cfg["ppo"]["share_encoder"] = share
+            validate_config(cfg)
+    cfg["ppo"]["fix_encoder"] = "false"
+    with pytest.raises(ValueError, match="ppo.fix_encoder"):
+        validate_config(cfg)
     cfg["ppo"]["fix_encoder"] = False
-    with pytest.raises(ValueError, match="freezes"):
+    cfg["ppo"]["share_encoder"] = None
+    with pytest.raises(ValueError, match="ppo.share_encoder"):
         validate_config(cfg)

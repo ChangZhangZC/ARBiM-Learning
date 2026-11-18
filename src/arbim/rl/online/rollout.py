@@ -18,7 +18,7 @@ from arbim.rl.rewards.base import RewardEvaluator
 def collect_online_episode(
     adapter: Any, policy: Any, spec: Mapping[str, Any], buffer: Any,
     evaluator: RewardEvaluator, *, gamma: float, max_env_steps: int,
-    seed: int | None = None,
+    seed: int | None = None, fix_encoder: bool = True,
 ) -> dict[str, Any]:
     """Only complete fixed-width decisions; partial true-terminal chunks allowed.
 
@@ -47,7 +47,7 @@ def collect_online_episode(
             {key: value[None] for key, value in before.items()},
             spec, policy.n_obs_steps, device=device,
         )
-        sampled = sample_online(policy, prepared)
+        sampled = sample_online(policy, prepared, fix_encoder=fix_encoder)
         if sampled.action.shape[0] != 1:
             raise ValueError("Task 6 V1 uses a single DuoBench environment.")
         commands = sampled.action[0].detach().cpu().numpy()

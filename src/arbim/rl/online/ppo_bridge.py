@@ -1,6 +1,7 @@
 """Build the pinned RL-100 Online PPO without copying or rewriting its loss."""
 from __future__ import annotations
 
+from copy import deepcopy
 from types import SimpleNamespace
 from typing import Any, Mapping
 
@@ -10,10 +11,11 @@ from arbim.rl.online.policy_adapter import validate_online_policy
 
 
 def build_online_ppo(policy: Any, settings: Mapping[str, Any]):
-    """Frozen shared RGB encoder + native ValueMLP + native denoising PPO.
+    """Configure native PPO Encoder modes without changing RL-100 loss math.
 
-    ValueMLP receives the already normalized and encoded observation via
-    RL1002D.obs2latent(). Skipping offline Q/V means the value starts random.
+    Shared Critic consumes actor features; independent Critic owns a deepcopy
+    of the pretrained IL RGB Encoder and learns its own ValueMLP head.
+    The ValueMLP head starts random because no offline Q/V is available.
     """
     from rl_100.unidpg.net import ValueMLP
     from rl_100.unidpg.uni_ppo import BehaviorProximalPolicyOptimization
@@ -21,8 +23,10 @@ def build_online_ppo(policy: Any, settings: Mapping[str, Any]):
     cfg = dict(settings)
     ratio_mode = cfg["ratio_mode"]
     validate_online_policy(policy, ratio_mode)
-    if cfg.get("fix_encoder") is not True or cfg.get("share_encoder") is not True:
-        raise ValueError("Task 6 V1 requires fix_encoder=True and share_encoder=True.")
+    fix_encoder = cfg.get("fix_encoder")
+    share_encoder = cfg.get("share_encoder")
+    if type(fix_encoder) is not bool or type(share_encoder) is not bool:
+        raise ValueError("fix_encoder and share_encoder must be booleans.")
     if cfg.get("use_bc") or cfg.get("value_recon") or cfg.get("recon"):
         raise ValueError("BC/Recon objectives are outside Task 6 V1.")
     if cfg["mini_batch_size"] > cfg["batch_size"]:
@@ -36,9 +40,12 @@ def build_online_ppo(policy: Any, settings: Mapping[str, Any]):
     device = next(policy.parameters()).device
     feature_dim = int(policy.obs_feature_dim) * int(policy.n_obs_steps)
     critic = ValueMLP(
-        None, feature_dim, int(cfg["value_hidden_dim"]),
+        None if share_encoder else deepcopy(policy.obs_encoder),
+        feature_dim, int(cfg["value_hidden_dim"]),
         int(cfg["value_depth"]), n_obs_steps=policy.n_obs_steps,
-        fix_encoder=True,
+        # RL-100 ValueLearner initializes its independent Value Encoder as
+        # trainable even if the Actor Encoder is frozen.
+        fix_encoder=False,
     ).to(device)
     ppo_args = SimpleNamespace(
         batch_size=int(cfg["batch_size"]),
@@ -54,7 +61,7 @@ def build_online_ppo(policy: Any, settings: Mapping[str, Any]):
         min_lr_critic=float(cfg["min_lr_critic"]),
         max_lr_critic=float(cfg["max_lr_critic"]),
         adaptive_kl=float(cfg["adaptive_kl"]),
-        fix_encoder=True, share_encoder=True, encoder_lr_scale=1.0,
+        fix_encoder=fix_encoder, share_encoder=share_encoder, encoder_lr_scale=1.0,
         actor_grad=True, use_bc=False, recon=False, value_recon=False,
         per_step_recon=False, use_adv_norm=bool(cfg["advantage_normalize"]),
         use_grad_clip=True, is_clip_value=bool(cfg["clip_value"]),
@@ -78,11 +85,18 @@ def build_online_ppo(policy: Any, settings: Mapping[str, Any]):
         entropy_weight=0.0, decay=1.0, omega=0.5,
         batch_size=ppo_args.batch_size, is_iql=False,
         ratio_strategy="last", num_inference_steps=policy.num_inference_steps,
-        fix_encoder=True, cfg=native_cfg,
+        fix_encoder=fix_encoder, cfg=native_cfg,
     )
     bridge.transfer2online(critic=critic, dynamics=None, cfg=native_cfg)
-    bridge._policy.obs_encoder.requires_grad_(False)
-    bridge._policy.obs_encoder.eval()
+    # transfer2online() constructs native optimizers before these mode flags.
+    # Explicitly restore gradients if the incoming IL model had frozen params.
+    bridge._policy.obs_encoder.requires_grad_(not fix_encoder)
+    bridge._policy.obs_encoder.eval()  # native RL-100 keeps Online encoder in eval mode
+    if not share_encoder:
+        bridge.critic._obs_encoder.requires_grad_(True)
+        bridge.critic._obs_encoder.eval()
+        if bridge.critic._obs_encoder is bridge._policy.obs_encoder:
+            raise RuntimeError("Independent Critic must own a distinct Encoder.")
     bridge._old_policy.requires_grad_(False)
     bridge._old_policy.eval()
     return bridge

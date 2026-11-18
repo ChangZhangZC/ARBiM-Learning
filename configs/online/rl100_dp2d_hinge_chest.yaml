@@ -40,8 +40,8 @@ ppo:
   critic_lr: 0.0003      # RL-100 Chunk Online shell override
   value_hidden_dim: 512  # RL-100 Chunk Online critic
   value_depth: 3
-  fix_encoder: true       # unchanged Task6 constraint; native Chunk uses false (separate review)
-  share_encoder: true     # unchanged Task6 constraint; native Chunk uses false (separate review)
+  fix_encoder: false      # RL-100 Chunk Online default: update Actor RGB Encoder
+  share_encoder: false    # RL-100 Chunk Online default: Critic owns independent RGB Encoder
   advantage_normalize: true
   clip_value: true       # RL-100 base PPO setting
   linear_lr_decay: true  # native RL-100 linear schedule over chunk decisions

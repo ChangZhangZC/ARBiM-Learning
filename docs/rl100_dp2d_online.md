@@ -217,10 +217,11 @@ The current Reward mode is only `env_raw` and is not a validated research reward
 python -m pytest -q tests/test_online_*.py
 ```
 
-Follow with a genuine GPU/MuJoCo smoke run, check both actor and critic
-optimizer update, frozen vision encoder, V2 full checkpoint round-trip,
-policy snapshot Eval, two consecutive PPO updates, then a separately
-interrupted-and-resumed run. Compare fixed-seed IL and PPO evaluations
+Follow with a genuine GPU/MuJoCo smoke run. With native `false/false`,
+check Actor Encoder **and** independent Critic Encoder gradients/parameter
+updates, distinct optimizer ownership, V2 checkpoint round-trip, independent
+policy-snapshot Eval, two PPO updates, and interrupted/resumed training.
+Repeat small one-update tests for the other three flag combinations. Compare fixed-seed IL and PPO evaluations
 before interpreting online reward increases as performance improvements.
 
 Neither GitHub-source review nor CPU-only tests substitute for these GPU/
@@ -254,11 +255,13 @@ shape/ratio boundaries.
   `episodes` and `env_steps`. Linear-decay Resume requires this counter,
   and cannot silently rebase the LR horizon by extending `max_updates`.
 - The native RL-100 Chunk Online example uses four parallel environments,
-  a 16-step action chunk, an independently trainable Critic encoder and an
-  unfrozen Actor encoder. ARBiM still uses a single DuoBench environment,
-  keeps the IL checkpoint's 32-step chunk and frozen/shared encoder. These
-  are explicitly **not yet equivalent**. The Critic is also random-initialized
-  because no offline Q/V checkpoint is available.
+  a 16-step action chunk, an independently trainable Critic Encoder and an
+  unfrozen Actor Encoder. ARBiM now uses matching **false/false** Encoder
+  modes by default, but keeps a single DuoBench environment and preserves
+  the IL checkpoint's 32-step action chunk. These remaining differences
+  are explicitly **not yet equivalent**. The Value Head is randomly
+  initialized because no offline Q/V checkpoint is available; the
+  independent Critic Encoder is instead initialized from IL Actor weights.
 - Old Task 7 `last.ckpt` V1/V2 Resume remains supported if its saved YAML had
   identical training/evaluation episode caps and no active environment-step
   training budget. A legacy run with differing caps or a non-null
@@ -266,3 +269,43 @@ shape/ratio boundaries.
   semantics. Reorganized config is written after a successful new checkpoint.
 - Legacy `step_XXXXXXXX.ckpt` filenames encoded environmental interactions,
   not PPO update count. They remain loadable as policy snapshots.
+
+## Encoder modes: all four paths supported
+
+Two independent PPO flags select the native RL-100 Actor/Value arrangement:
+
+| `fix_encoder` | `share_encoder` | Actor RGB Encoder | Critic RGB Encoder |
+|---|---|---|---|
+| **false** | **false** | trainable, IL-initialized | independent, IL-initialized, trainable (**default**) |
+| false | true | trainable | no separate Encoder; Critic uses detached Actor features |
+| true | false | frozen | independent, IL-initialized, **still trainable** |
+| true | true | frozen | no separate Encoder; Critic uses fixed Actor features |
+
+`fix_encoder` applies to the **Actor Encoder only**. In RL-100's
+`ValueLearner`, a separate Value Encoder is trainable even if the Actor
+Encoder is fixed. Do not confuse `torch.nn.Module.eval()` (BatchNorm/Dropout
+behavior) with `requires_grad_(False)`: native Online RL-100 puts the Actor
+Encoder in eval mode even when it can receive PPO gradients. Both the
+current and frozen `_old_policy` remain separate; `set_old_policy()` is
+followed by explicit `requires_grad_(False)` to keep the old snapshot frozen.
+
+With `share_encoder=false`, the native PPO route uses
+`_policy.obs2this_nobs()` to supply normalized raw observations to
+the **Critic's own** `ValueMLP._obs_encoder`. In the shared route,
+`_policy.obs2latent()` provides detached features instead. This
+selection is made by the pinned `dp_align_update_no_share()`, not a
+new ARBiM PPO loss function.
+
+The independent Critic Encoder is deep-copied from the verified IL
+Actor Encoder as a necessary adaptation in the absence of offline
+Critic weights. The independent Value Head is randomly initialized.
+Changing `fix_encoder` or `share_encoder` between checkpoints changes
+the architecture/optimization contract and is rejected on Resume.
+
+**Validation matrix:** `tests/test_online_encoder_modes.py` exercises all four
+combinations using a small native PPO/ValueMLP bridge. It verifies encoder
+ownership, gradients, optimizer parameter groups, Value input shapes and
+full checkpoint restoration without spawning DuoBench. The end-to-end GPU
+PPO and MuJoCo smoke gates must still run before claiming native behavior
+equivalence. `false/false` allocates another visual Encoder and will increase
+VRAM and critic backward cost substantially relative to the previous V1.

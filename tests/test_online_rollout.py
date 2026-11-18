@@ -65,7 +65,7 @@ def patch_policy(monkeypatch):
     def fake_prepare(batch, spec, n_obs_steps, *, device):
         return {"agent_pos": torch.zeros((1, n_obs_steps, 16))}
 
-    def fake_sample(policy, observation):
+    def fake_sample(policy, observation, *, fix_encoder=True):
         h = policy.n_action_steps
         return OnlineSample(
             action=torch.zeros((1, h, 16)),
@@ -112,3 +112,22 @@ def test_partial_truncation_rejected_until_variable_span_supported(patch_policy)
             FakePolicy(), patch_policy, FakeBuffer(), HingeChestReward(),
             gamma=0.99, max_env_steps=8,
         )
+
+
+@pytest.mark.parametrize("fix_encoder", [False, True])
+def test_rollout_passes_actor_freeze_mode_to_native_sampler(patch_policy, monkeypatch):
+    observed = []
+    original = rollout.sample_online
+
+    def tracing_sample(policy, observation, *, fix_encoder=True):
+        observed.append(fix_encoder)
+        return original(policy, observation, fix_encoder=fix_encoder)
+
+    monkeypatch.setattr(rollout, "sample_online", tracing_sample)
+    result = rollout.collect_online_episode(
+        FakeAdapter(patch_policy, terminal_step=4),
+        FakePolicy(), patch_policy, FakeBuffer(), HingeChestReward(),
+        gamma=0.99, max_env_steps=8, fix_encoder=fix_encoder,
+    )
+    assert result["transitions"] == 1
+    assert observed == [fix_encoder]
