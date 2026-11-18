@@ -20,17 +20,14 @@ def collect_online_episode(
     evaluator: RewardEvaluator, *, gamma: float, max_env_steps: int,
     seed: int | None = None, fix_encoder: bool = True,
 ) -> dict[str, Any]:
-    """Only complete fixed-width decisions; partial true-terminal chunks allowed.
+    """Collect full DDIM trajectories while executing only available env steps.
 
-    A partially executed, nonterminal/truncated chunk cannot be handed to the
-    pinned gamma**n_action_steps GAE without changing its mathematics.
-    In V1, require max_env_steps to be divisible by the active action span;
-    a truncated signal inside a chunk fails explicitly instead of silently
-    using the wrong discount.
+    The final chunk may be shorter than the policy horizon. Record its actual
+    execution span for variable-discount GAE outside the pinned native PPO.
     """
     span = policy.n_action_steps
-    if type(max_env_steps) is not int or max_env_steps < span or max_env_steps % span:
-        raise ValueError("max_env_steps must be positive and divisible by n_action_steps.")
+    if type(max_env_steps) is not int or max_env_steps < 1:
+        raise ValueError("max_env_steps must be a positive integer.")
     if adapter.spec is not spec and adapter.spec != spec:
         raise ValueError("DuoBench checkpoint/environment specs disagree.")
     device = next(policy.parameters()).device
@@ -53,7 +50,7 @@ def collect_online_episode(
         commands = sampled.action[0].detach().cpu().numpy()
         rewards: list[float] = []
         terminated = truncated = False
-        for command in commands:
+        for command in commands[:max_env_steps - total_steps]:
             raw_obs, reward, terminated, truncated, info = adapter.step(command)
             result = evaluator.evaluate(reward, info, terminated=terminated, truncated=truncated)
             history.append(snapshot_observation(raw_obs, spec))
@@ -69,14 +66,8 @@ def collect_online_episode(
             if ended:
                 break
 
-        if len(rewards) < span and truncated and not terminated:
-            raise RuntimeError(
-                "Partial truncated Chunk requires variable-span GAE; unsupported in V1."
-            )
-        if len(rewards) < span and not (terminated or success):
-            raise RuntimeError(
-                "Nonterminal partial Chunk is unsupported by native gamma**n_action_steps GAE."
-            )
+        if not rewards:
+            raise RuntimeError("Online episode attempted an empty action chunk.")
         after = observation_window(history, spec)
         chunk_r = discounted_chunk_reward(rewards, gamma)
         buffer.store(
@@ -84,6 +75,7 @@ def collect_online_episode(
             chunk_r, after,
             bool(ended or total_steps >= max_env_steps),
             bool(terminated or success),
+            executed_steps=len(rewards),
         )
         transitions += 1
         if total_steps >= max_env_steps:
