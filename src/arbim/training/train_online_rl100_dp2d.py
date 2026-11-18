@@ -347,7 +347,8 @@ def run(config: dict[str, Any], *, legacy_config: dict[str, Any] | None = None) 
     logger.message(
         f"[INIT] actor=RL1002D H={span} K={policy.num_inference_steps} "
         f"device={cfg['policy']['device']} update={updates}/{cfg['ppo']['max_updates']} "
-        f"env_steps={env_steps} decision_steps={decision_steps}"
+        f"env_steps={env_steps} decision_steps={decision_steps} "
+        f"native_lr_horizon={ppo.args.max_train_steps if cfg['ppo']['linear_lr_decay'] else 'adaptive_kl'}"
     )
 
     stop_requested = False
