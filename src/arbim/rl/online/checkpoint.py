@@ -177,6 +177,8 @@ def restore_online_checkpoint(ppo: Any, payload: Mapping[str, Any]) -> tuple[int
     ppo.kl_scheduler_actor.current_lr = float(payload["actor_adaptive_lr"])
     ppo.kl_scheduler_critic.current_lr = float(payload["critic_adaptive_lr"])
     ppo.set_old_policy()
+    ppo._old_policy.requires_grad_(False)
+    ppo._old_policy.eval()
     _restore_rng(payload["rng"])
     return payload["updates"], payload["episodes"], payload["env_steps"]
 
