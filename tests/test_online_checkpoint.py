@@ -202,3 +202,53 @@ def test_legacy_v2_checkpoint_resume_with_new_ppo_update_budget(tmp_path):
             path, config=extended, original_checkpoint="/tmp/example/best.ckpt",
             legacy_config=legacy,
         )
+
+
+def test_linear_lr_checkpoint_records_decisions_and_blocks_budget_extension(tmp_path):
+    config = profile()
+    config["ppo"]["linear_lr_decay"] = True
+    config["ppo"]["max_updates"] = 10000
+    path = tmp_path / "last.ckpt"
+    save_online_checkpoint(
+        path, FakePPO(), config=config, updates=2, episode_count=4,
+        env_steps=3968, decision_steps=124, original_checkpoint="/tmp/example/best.ckpt",
+    )
+    payload = read_online_checkpoint(
+        path, config=config, original_checkpoint="/tmp/example/best.ckpt"
+    )
+    assert payload["decision_steps"] == 124
+    extended = copy.deepcopy(config)
+    extended["ppo"]["max_updates"] = 20000
+    with pytest.raises(ValueError, match="contract"):
+        read_online_checkpoint(
+            path, config=extended, original_checkpoint="/tmp/example/best.ckpt"
+        )
+
+
+def test_linear_lr_resume_requires_checkpoint_decision_counter(tmp_path):
+    config = profile()
+    config["ppo"]["linear_lr_decay"] = True
+    path = tmp_path / "last.ckpt"
+    save_online_checkpoint(
+        path, FakePPO(), config=config, updates=1, episode_count=2,
+        env_steps=1984, original_checkpoint="/tmp/example/best.ckpt"
+    )
+    with pytest.raises(ValueError, match="decision_steps"):
+        read_online_checkpoint(
+            path, config=config, original_checkpoint="/tmp/example/best.ckpt"
+        )
+
+
+def test_adaptive_lr_mode_still_allows_budget_extension(tmp_path):
+    config = profile()
+    config["ppo"]["linear_lr_decay"] = False
+    path = tmp_path / "last.ckpt"
+    save_online_checkpoint(
+        path, FakePPO(), config=config, updates=1, episode_count=2,
+        env_steps=1984, original_checkpoint="/tmp/example/best.ckpt"
+    )
+    extended = copy.deepcopy(config)
+    extended["ppo"]["max_updates"] += 100
+    assert read_online_checkpoint(
+        path, config=extended, original_checkpoint="/tmp/example/best.ckpt"
+    )["updates"] == 1
