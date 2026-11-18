@@ -140,7 +140,8 @@ def update_online_ppo(ppo: Any, buffer: Any, *, total_steps: int) -> dict[str, f
     # Native loop uses args.batch_size as an exact range. Collect complete
     # episodes to preserve GAE boundaries, then adapt its current batch length.
     ppo.args.batch_size = buffer.count
-    precomputed = _variable_span_advantage(ppo, buffer) if buffer.has_partial_spans() else None
+    has_partial = getattr(buffer, "has_partial_spans", lambda: False)()
+    precomputed = _variable_span_advantage(ppo, buffer) if has_partial else None
     actor, critic, bc, distill = ppo.dp_align_update_no_share(
         buffer, total_steps, precomputed=precomputed,
     )
