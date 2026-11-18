@@ -129,7 +129,7 @@ def test_partial_truncation_and_nondivisible_episode_limit(patch_policy):
 
 
 @pytest.mark.parametrize("fix_encoder", [False, True])
-def test_rollout_passes_actor_freeze_mode_to_native_sampler(patch_policy, monkeypatch):
+def test_rollout_passes_actor_freeze_mode_to_native_sampler(patch_policy, monkeypatch, fix_encoder):
     observed = []
     original = rollout.sample_online
 
