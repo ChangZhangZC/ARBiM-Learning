@@ -171,7 +171,8 @@ def test_four_modes_full_checkpoint_restores_encoder_state(tmp_path, fix_encoder
             original.critic._obs_encoder.linear.weight.fill_(0.57)
     save_online_checkpoint(
         target_path, original, config=cfg, updates=1, episode_count=2,
-        env_steps=32, decision_steps=8, original_checkpoint="/tmp/test/il.ckpt",
+        env_steps=32, decision_steps=8, ppo_steps=40,
+        original_checkpoint="/tmp/test/il.ckpt",
     )
     payload = read_online_checkpoint(
         target_path, config=cfg, original_checkpoint="/tmp/test/il.ckpt",
@@ -203,7 +204,7 @@ def test_resume_rejects_encoder_mode_changes(tmp_path, fix_encoder, share_encode
     target_path = tmp_path / "last.ckpt"
     save_online_checkpoint(
         target_path, create_bridge(cfg), config=cfg, updates=1,
-        episode_count=2, env_steps=32, decision_steps=8,
+        episode_count=2, env_steps=32, decision_steps=8, ppo_steps=40,
         original_checkpoint="/tmp/test/il.ckpt",
     )
     for changed_key in ("fix_encoder", "share_encoder"):
@@ -213,3 +214,12 @@ def test_resume_rejects_encoder_mode_changes(tmp_path, fix_encoder, share_encode
             read_online_checkpoint(
                 target_path, config=edited, original_checkpoint="/tmp/test/il.ckpt",
             )
+
+
+def test_native_adaptive_kl_critic_uses_critic_learning_rate():
+    cfg = config()
+    cfg["ppo"]["linear_lr_decay"] = False
+    ppo = create_bridge(cfg)
+    assert ppo.kl_scheduler_actor.current_lr == pytest.approx(cfg["ppo"]["actor_lr"])
+    assert ppo.kl_scheduler_critic.current_lr == pytest.approx(cfg["ppo"]["critic_lr"])
+    assert ppo.optimizer_critic.param_groups[0]["lr"] == pytest.approx(cfg["ppo"]["critic_lr"])
