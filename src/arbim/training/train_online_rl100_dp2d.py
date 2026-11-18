@@ -102,8 +102,11 @@ def validate_config(cfg: Mapping[str, Any]) -> None:
     ):
         raise ValueError("evaluation.seed must be nonnegative or null.")
     checkpoints = cfg["checkpoint"]
-    if type(checkpoints.get("every_updates")) is not int or checkpoints["every_updates"] < 1:
-        raise ValueError("checkpoint.every_updates must be positive.")
+    if ("every_steps" in checkpoints) == ("every_updates" in checkpoints):
+        raise ValueError("Set exactly one of checkpoint.every_steps or legacy checkpoint.every_updates.")
+    interval_key = "every_steps" if "every_steps" in checkpoints else "every_updates"
+    if type(checkpoints.get(interval_key)) is not int or checkpoints[interval_key] < 1:
+        raise ValueError(f"checkpoint.{interval_key} must be a positive integer.")
     if type(checkpoints.get("keep_last", 3)) is not int or checkpoints.get("keep_last", 3) < 1:
         raise ValueError("checkpoint.keep_last must be positive.")
     if type(checkpoints.get("save_on_finish", True)) is not bool:
@@ -217,6 +220,20 @@ def _budget_reached(cfg: Mapping[str, Any], updates: int, ppo_steps: int = 0) ->
     ppo = cfg["ppo"]
     return (ppo_steps >= int(ppo["max_steps"]) if "max_steps" in ppo
             else updates >= int(ppo["max_updates"]))
+
+
+def _checkpoint_interval_due(
+    checkpoint_cfg: Mapping[str, Any], *, updates: int,
+    previous_ppo_steps: int, ppo_steps: int,
+) -> bool:
+    """Save at a completed PPO cycle that crosses a mini-batch-step boundary.
+
+    Legacy checkpoint.every_updates continues to count full PPO cycles.
+    """
+    if "every_steps" in checkpoint_cfg:
+        interval = int(checkpoint_cfg["every_steps"])
+        return ppo_steps // interval > previous_ppo_steps // interval
+    return updates % int(checkpoint_cfg["every_updates"]) == 0
 
 
 def _linear_lr_total_steps(cfg: Mapping[str, Any], action_span: int) -> int:
@@ -466,6 +483,7 @@ def run(config: dict[str, Any], *, legacy_config: dict[str, Any] | None = None) 
                 current_batch_transitions, cfg["ppo"]["mini_batch_size"], cfg["ppo"]["K_epochs"],
             )
             metrics = update_online_ppo(ppo, buffer, total_steps=lr_steps)
+            previous_ppo_steps = ppo_steps
             ppo_steps += batch_ppo_steps
             update_elapsed = time.perf_counter() - update_start
             ratio_metrics = native_ratio_summary(ppo) if settings["enable_ratio_logging"] else {}
@@ -530,7 +548,10 @@ def run(config: dict[str, Any], *, legacy_config: dict[str, Any] | None = None) 
                 progress.update(batch_ppo_steps if minibatch_budget else 1)
             checkpoint_cfg = cfg["checkpoint"]
             if (
-                updates % checkpoint_cfg["every_updates"] == 0
+                _checkpoint_interval_due(
+                    checkpoint_cfg, updates=updates,
+                    previous_ppo_steps=previous_ppo_steps, ppo_steps=ppo_steps,
+                )
                 or stop_requested
                 or (finished and checkpoint_cfg.get("save_on_finish", True))
             ):
