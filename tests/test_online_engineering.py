@@ -331,3 +331,12 @@ def test_temp_smoke_yaml_is_separate_from_experiment_defaults():
     assert smoke["output"]["root"].startswith("/tmp/")
     smoke["policy"]["checkpoint_path"] = "/tmp/verified/last.ckpt"
     validate_config(smoke)
+    # Keep duplicated smoke settings in sync with the experiment YAML, apart
+    # from the explicitly approved test-only resource/time/output overrides.
+    expected = copy.deepcopy(base)
+    expected["env"]["max_episode_steps"] = 65
+    expected["ppo"].update(max_steps=12, batch_size=16, mini_batch_size=8, K_epochs=2)
+    expected["evaluation"].update(every_updates=1, num_episodes=2)
+    expected["logging"]["ratio_diagnostics"]["every_updates"] = 1
+    expected["output"].update(root="/tmp/arbim_online_smoke", run_name="smoke_{timestep}")
+    assert smoke == expected
