@@ -19,6 +19,11 @@ def build_online_ppo(policy: Any, settings: Mapping[str, Any]):
     """
     from rl_100.unidpg.net import ValueMLP
     from rl_100.unidpg.uni_ppo import BehaviorProximalPolicyOptimization
+    from arbim.rl.online.telemetry import RatioDiagnosticsMixin
+
+    class PPOWithRatioDiagnostics(RatioDiagnosticsMixin, BehaviorProximalPolicyOptimization):
+        pass
+
 
     cfg = dict(settings)
     ratio_mode = cfg["ratio_mode"]
@@ -79,7 +84,8 @@ def build_online_ppo(policy: Any, settings: Mapping[str, Any]):
         distill_phase="off",
         ppo=ppo_args,
     )
-    bridge = BehaviorProximalPolicyOptimization(
+    ppo_class = PPOWithRatioDiagnostics if cfg.get("enable_ratio_logging", False) else BehaviorProximalPolicyOptimization
+    bridge = ppo_class(
         policy=policy, device=device,
         policy_lr=ppo_args.lr_a, clip_ratio=ppo_args.epsilon,
         entropy_weight=0.0, decay=1.0, omega=0.5,
