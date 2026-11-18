@@ -38,12 +38,14 @@ def validate_online_policy(policy: Any, ratio_mode: str) -> None:
 
 
 @torch.no_grad()
-def sample_online(policy: Any, observation: Mapping[str, torch.Tensor]) -> OnlineSample:
+def sample_online(
+    policy: Any, observation: Mapping[str, torch.Tensor], *, fix_encoder: bool = True
+) -> OnlineSample:
     """Preserve the exact sampled denoising transitions used by the environment action."""
     if "agent_pos" not in observation:
         raise KeyError("Online observation requires agent_pos.")
     action, all_x, logprob = policy.all_step_action_logprob(
-        dict(observation), fix_encoder=True, use_cm=False
+        dict(observation), fix_encoder=fix_encoder, use_cm=False
     )
     b = observation["agent_pos"].shape[0]
     t = policy.horizon - policy.n_obs_steps + 1
