@@ -256,8 +256,8 @@ def test_native_chunk_ppo_defaults_and_decision_lr_horizon():
     assert ppo["value_depth"] == 3
     assert ppo["clip_value"] is True
     assert ppo["linear_lr_decay"] is True
-    assert ppo["fix_encoder"] is True  # explicit V1 difference, not silently altered
-    assert ppo["share_encoder"] is True
+    assert ppo["fix_encoder"] is False  # RL-100 Chunk Online default
+    assert ppo["share_encoder"] is False
     validate_config(cfg)
     # 992 / 32 = 31 decisions/episode; ceil(1024 / 31) = 34 episodes.
     assert _linear_lr_total_steps(cfg, action_span=32) == 1054 * 10000
