@@ -15,7 +15,7 @@ class MetricLogger:
         self.jsonl = run_dir / "metrics.jsonl"
         self.tb = None
         self.wb = None
-        if resumed:
+        if resumed and cfg["logging"].get("jsonl", True):
             trim_metrics(self.jsonl, resume_step)
         tb_cfg = cfg["logging"]["tensorboard"]
         wb_cfg = cfg["logging"]["wandb"]
@@ -23,7 +23,7 @@ class MetricLogger:
             if tb_cfg["enabled"]:
                 from torch.utils.tensorboard import SummaryWriter
                 options = {"purge_step": resume_step + 1} if resumed else {}
-                self.tb = SummaryWriter(log_dir=str(run_dir / "tensorboard"), **options)
+                self.tb = SummaryWriter(log_dir=str(tb_cfg.get("log_dir") or run_dir / "tensorboard"), **options)
             if wb_cfg["enabled"]:
                 import wandb
                 id_path = run_dir / "wandb_run_id.txt"
