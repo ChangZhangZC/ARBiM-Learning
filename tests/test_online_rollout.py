@@ -22,8 +22,8 @@ class FakeBuffer:
     def __init__(self):
         self.records = []
 
-    def store(self, *args):
-        self.records.append(args)
+    def store(self, *args, **kwargs):
+        self.records.append((*args, kwargs['executed_steps']))
 
 
 class FakeAdapter:
@@ -90,7 +90,7 @@ def test_full_chunk_reward_and_success_end(patch_policy):
     record = buffer.records[0]
     assert record[1].shape == (3, 4, 16)
     assert record[3] == 1.875
-    assert record[5:] == (True, True)
+    assert record[5:] == (True, True, 4)
 
 
 def test_true_terminal_partial_chunk_has_no_bootstrap(patch_policy):
@@ -102,16 +102,30 @@ def test_true_terminal_partial_chunk_has_no_bootstrap(patch_policy):
     )
     assert result["episode_steps"] == 2
     assert buffer.records[0][3] == 1.5
-    assert buffer.records[0][-1] is True
+    assert buffer.records[0][-2] is True
+    assert buffer.records[0][-1] == 2
 
 
-def test_partial_truncation_rejected_until_variable_span_supported(patch_policy):
-    with pytest.raises(RuntimeError, match="Partial truncated"):
-        rollout.collect_online_episode(
-            FakeAdapter(patch_policy, terminal_step=2, truncated=True),
-            FakePolicy(), patch_policy, FakeBuffer(), HingeChestReward(),
-            gamma=0.99, max_env_steps=8,
-        )
+def test_partial_truncation_and_nondivisible_episode_limit(patch_policy):
+    truncated_buffer = FakeBuffer()
+    result = rollout.collect_online_episode(
+        FakeAdapter(patch_policy, terminal_step=2, truncated=True),
+        FakePolicy(), patch_policy, truncated_buffer, HingeChestReward(),
+        gamma=0.99, max_env_steps=8,
+    )
+    assert result["episode_steps"] == 2
+    assert truncated_buffer.records[0][-3:] == (True, False, 2)
+
+    limit_buffer = FakeBuffer()
+    capped = rollout.collect_online_episode(
+        FakeAdapter(patch_policy, terminal_step=100),
+        FakePolicy(), patch_policy, limit_buffer, HingeChestReward(),
+        gamma=0.99, max_env_steps=5,
+    )
+    assert capped["episode_steps"] == 5
+    assert capped["transitions"] == 2
+    assert [row[-1] for row in limit_buffer.records] == [4, 1]
+    assert limit_buffer.records[-1][-3:] == (True, False, 1)
 
 
 @pytest.mark.parametrize("fix_encoder", [False, True])
