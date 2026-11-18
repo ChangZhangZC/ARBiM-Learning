@@ -28,7 +28,7 @@ from arbim.rl.online.checkpoint import (
     save_inference_snapshot, save_online_checkpoint, prune_policy_snapshots,
 )
 from arbim.rl.online.policy_adapter import validate_online_policy
-from arbim.rl.online.ppo_bridge import build_online_ppo, update_online_ppo
+from arbim.rl.online.ppo_bridge import build_online_ppo, update_online_ppo, count_ppo_steps
 from arbim.rl.online.rollout import collect_online_episode
 from arbim.rl.online.telemetry import (
     OnlineTelemetry, native_ratio_summary, append_native_ratio_records,
@@ -50,9 +50,14 @@ def validate_config(cfg: Mapping[str, Any]) -> None:
     if cfg["reward"].get("mode") != "env_raw":
         raise ValueError("Task 6 V1 supports only native env_raw reward.")
     ppo = cfg["ppo"]
-    for key in ("max_updates", "batch_size", "mini_batch_size", "K_epochs", "value_hidden_dim", "value_depth"):
+    if ("max_steps" in ppo) == ("max_updates" in ppo):
+        raise ValueError("Set exactly one of ppo.max_steps (PPO minibatches) or legacy ppo.max_updates.")
+    for key in ("batch_size", "mini_batch_size", "K_epochs", "value_hidden_dim", "value_depth"):
         if type(ppo.get(key)) is not int or ppo[key] < 1:
             raise ValueError(f"ppo.{key} must be a positive integer.")
+    budget_key = "max_steps" if "max_steps" in ppo else "max_updates"
+    if type(ppo[budget_key]) is not int or ppo[budget_key] < 1:
+        raise ValueError(f"ppo.{budget_key} must be a positive integer.")
     for key in ("actor_lr", "critic_lr", "min_lr_actor", "max_lr_actor", "min_lr_critic",
                 "max_lr_critic", "adaptive_kl", "gamma", "gae_lambda", "epsilon"):
         value = ppo.get(key)
@@ -205,9 +210,11 @@ def _write_run_meta(run_dir: Path, cfg: Mapping[str, Any], il_path: str) -> None
     )
 
 
-def _budget_reached(cfg: Mapping[str, Any], updates: int) -> bool:
-    """Only completed PPO update cycles count toward the training budget."""
-    return updates >= int(cfg["ppo"]["max_updates"])
+def _budget_reached(cfg: Mapping[str, Any], updates: int, ppo_steps: int = 0) -> bool:
+    """Stop only at complete native PPO rollout/update boundaries."""
+    ppo = cfg["ppo"]
+    return (ppo_steps >= int(ppo["max_steps"]) if "max_steps" in ppo
+            else updates >= int(ppo["max_updates"]))
 
 
 def _linear_lr_total_steps(cfg: Mapping[str, Any], action_span: int) -> int:
@@ -221,14 +228,20 @@ def _linear_lr_total_steps(cfg: Mapping[str, Any], action_span: int) -> int:
     if type(action_span) is not int or action_span < 1:
         raise ValueError("Effective action span must be positive.")
     episode_steps = int(cfg["env"]["max_episode_steps"])
-    if episode_steps % action_span:
-        raise ValueError("Episode steps must be divisible by action span.")
-    transitions_per_episode = episode_steps // action_span
+    transitions_per_episode = math.ceil(episode_steps / action_span)
     transitions_per_update = (
         math.ceil(int(cfg["ppo"]["batch_size"]) / transitions_per_episode)
         * transitions_per_episode
     )
-    return transitions_per_update * int(cfg["ppo"]["max_updates"])
+    ppo = cfg["ppo"]
+    if "max_steps" in ppo:
+        min_steps_per_update = count_ppo_steps(
+            int(ppo["batch_size"]), int(ppo["mini_batch_size"]), int(ppo["K_epochs"]),
+        )
+        maximum_updates = math.ceil(ppo["max_steps"] / min_steps_per_update)
+    else:
+        maximum_updates = int(ppo["max_updates"])
+    return transitions_per_update * maximum_updates
 
 
 def _mean_eval_stage(folder: Path) -> float | None:
@@ -273,8 +286,7 @@ def run(config: dict[str, Any], *, legacy_config: dict[str, Any] | None = None) 
     )
     validate_online_policy(policy, cfg["ppo"]["ratio_mode"])
     span = policy.n_action_steps
-    if cfg["env"]["max_episode_steps"] % span:
-        raise ValueError("env.max_episode_steps must be divisible by effective n_action_steps.")
+    # Partial final chunks are handled by variable-span GAE in the bridge.
     if cfg["ppo"]["mini_batch_size"] > cfg["ppo"]["batch_size"]:
         raise ValueError("PPO mini_batch_size > batch_size.")
     validate_dataset_spec(spec, cfg["env"]["camera_map"])
@@ -296,6 +308,7 @@ def run(config: dict[str, Any], *, legacy_config: dict[str, Any] | None = None) 
         prediction_steps=policy.horizon - policy.n_obs_steps + 1,
         num_inference_steps=policy.num_inference_steps,
         action_dim=policy.action_dim, device=next(policy.parameters()).device,
+        action_span=span,
     )
 
     if resume_path is not None:
@@ -314,7 +327,8 @@ def run(config: dict[str, Any], *, legacy_config: dict[str, Any] | None = None) 
         )
         updates, episodes, env_steps = restore_online_checkpoint(ppo, payload)
         decision_steps = int(payload.get("decision_steps", 0))
-        if _budget_reached(cfg, updates):
+        ppo_steps = int(payload.get("ppo_steps", 0))
+        if _budget_reached(cfg, updates, ppo_steps):
             raise ValueError("Online run already reached its configured training budget.")
         previous_config = yaml.safe_load(
             (run_dir / "config_resolved.yaml").read_text(encoding="utf-8")
@@ -324,10 +338,10 @@ def run(config: dict[str, Any], *, legacy_config: dict[str, Any] | None = None) 
         run_dir = _new_run_dir(cfg)
         _save_config(run_dir / "config_resolved.yaml", frozen)
         _write_run_meta(run_dir, frozen, il_path)
-        updates, episodes, env_steps, decision_steps = 0, 0, 0, 0
+        updates, episodes, env_steps, decision_steps, ppo_steps = 0, 0, 0, 0, 0
         pending_config = None
 
-    if _budget_reached(cfg, updates):
+    if _budget_reached(cfg, updates, ppo_steps):
         raise ValueError("Online run already reached its configured training budget.")
 
     logging_settings = {
@@ -345,10 +359,15 @@ def run(config: dict[str, Any], *, legacy_config: dict[str, Any] | None = None) 
     finally:
         _restore_rng(rng)
     logger.message(f"[ONLINE] run={run_dir}")
+    logger.message("[LOG] train.log contains ARBiM summaries; native PPO tqdm/stdout is console-only.")
+    logger.message(
+        f"[DDIM] clip_std_min={getattr(policy.noise_scheduler, 'clip_std_min', None)} "
+        f"clip_std_max={getattr(policy.noise_scheduler, 'clip_std_max', None)}"
+    )
     logger.message(
         f"[INIT] actor=RL1002D H={span} K={policy.num_inference_steps} "
         f"device={cfg['policy']['device']} update={updates}/{cfg['ppo']['max_updates']} "
-        f"env_steps={env_steps} decision_steps={decision_steps} "
+        f"env_steps={env_steps} decision_steps={decision_steps} ppo_steps={ppo_steps} "
         f"native_lr_horizon={ppo.args.max_train_steps if cfg['ppo']['linear_lr_decay'] else 'adaptive_kl'}"
     )
 
@@ -378,12 +397,14 @@ def run(config: dict[str, Any], *, legacy_config: dict[str, Any] | None = None) 
             binarize_state_gripper=cfg["env"].get("binarize_state_gripper", True),
             gripper_threshold=cfg["env"].get("gripper_threshold", 0.9),
         )
-        total_budget = cfg["ppo"]["max_updates"]
+        minibatch_budget = "max_steps" in cfg["ppo"]
+        total_budget = cfg["ppo"]["max_steps" if minibatch_budget else "max_updates"]
         if log_cfg.get("progress_bar", True) and sys.stderr.isatty():
             from tqdm import tqdm
-            progress = tqdm(total=total_budget, initial=updates,
-                            desc="PPO Updates", unit="update", dynamic_ncols=True)
-        while not _budget_reached(cfg, updates):
+            progress = tqdm(total=total_budget, initial=ppo_steps if minibatch_budget else updates,
+                            desc="PPO Mini-batches" if minibatch_budget else "PPO Updates",
+                            unit="step" if minibatch_budget else "update", dynamic_ncols=True)
+        while not _budget_reached(cfg, updates, ppo_steps):
             batch_rollouts = []
             batch_rollout_elapsed = 0.0
             while buffer.count < cfg["ppo"]["batch_size"]:
@@ -433,7 +454,11 @@ def run(config: dict[str, Any], *, legacy_config: dict[str, Any] | None = None) 
                 min(decision_steps, ppo.args.max_train_steps)
                 if cfg["ppo"]["linear_lr_decay"] else decision_steps
             )
+            batch_ppo_steps = count_ppo_steps(
+                current_batch_transitions, cfg["ppo"]["mini_batch_size"], cfg["ppo"]["K_epochs"],
+            )
             metrics = update_online_ppo(ppo, buffer, total_steps=lr_steps)
+            ppo_steps += batch_ppo_steps
             update_elapsed = time.perf_counter() - update_start
             ratio_metrics = native_ratio_summary(ppo) if settings["enable_ratio_logging"] else {}
             updates += 1
@@ -460,7 +485,7 @@ def run(config: dict[str, Any], *, legacy_config: dict[str, Any] | None = None) 
             }
             record = {
                 "event": "ppo", "updates": updates, "episodes": episodes, "env_steps": env_steps,
-                "decision_steps": decision_steps,
+                "decision_steps": decision_steps, "ppo_steps": ppo_steps,
                 "requested_batch_size": cfg["ppo"]["batch_size"],
                 "actual_batch_size": current_batch_transitions,
                 **metrics, "actor_lr": actor_lr, "critic_lr": critic_lr,
@@ -468,7 +493,7 @@ def run(config: dict[str, Any], *, legacy_config: dict[str, Any] | None = None) 
             }
             logger.event(
                 "ppo", record,
-                summary=(f"[PPO] update={updates}/{total_budget} transitions={current_batch_transitions} "
+                summary=(f"[PPO] rollout_update={updates} ppo_steps={ppo_steps}/{total_budget if minibatch_budget else 'n/a'} transitions={current_batch_transitions} "
                          f"decisions={decision_steps} env_steps={env_steps} "
                          f"actor={metrics['actor_loss']:.4f} critic={metrics['critic_loss']:.2f} "
                          f"lr={actor_lr:.2e}/{critic_lr:.2e}"),
@@ -478,7 +503,8 @@ def run(config: dict[str, Any], *, legacy_config: dict[str, Any] | None = None) 
                     "rollout": rollout_averages,
                     "progress": {"ppo_updates": updates, "episodes": episodes,
                                  "env_steps": env_steps, "decision_steps": decision_steps,
-                                 "actual_batch_size": current_batch_transitions},
+                                 "actual_batch_size": current_batch_transitions,
+                                 "ppo_steps": ppo_steps},
                     "system": {
                         "rollout_s": batch_rollout_elapsed,
                         "env_steps_per_s": batch_env_steps / max(batch_rollout_elapsed, 1e-9),
@@ -487,9 +513,9 @@ def run(config: dict[str, Any], *, legacy_config: dict[str, Any] | None = None) 
                     "diagnostics": ratio_metrics,
                 },
             )
-            finished = _budget_reached(cfg, updates)
+            finished = _budget_reached(cfg, updates, ppo_steps)
             if progress is not None:
-                progress.update(1)
+                progress.update(batch_ppo_steps if minibatch_budget else 1)
             checkpoint_cfg = cfg["checkpoint"]
             if (
                 updates % checkpoint_cfg["every_updates"] == 0
@@ -500,7 +526,7 @@ def run(config: dict[str, Any], *, legacy_config: dict[str, Any] | None = None) 
                 save_online_checkpoint(
                     checkpoint_dir / "last.ckpt", ppo, config=frozen, updates=updates,
                     episode_count=episodes, env_steps=env_steps, original_checkpoint=il_path,
-                    decision_steps=decision_steps,
+                    decision_steps=decision_steps, ppo_steps=ppo_steps,
                 )
                 if pending_config is not None:
                     # Write the migrated YAML only after a valid new-format
@@ -583,7 +609,7 @@ def run(config: dict[str, Any], *, legacy_config: dict[str, Any] | None = None) 
             if stop_requested:
                 break
         elapsed = time.perf_counter() - run_start
-        logger.message(f"[DONE] updates={updates} env_steps={env_steps} elapsed_s={elapsed:.1f}")
+        logger.message(f"[DONE] rollout_updates={updates} ppo_steps={ppo_steps} env_steps={env_steps} elapsed_s={elapsed:.1f}")
     finally:
         signal.signal(signal.SIGINT, old_sigint)
         if progress is not None:
@@ -602,7 +628,9 @@ def main() -> None:
     parser.add_argument("--resume", type=Path, help="Existing run directory or checkpoints/last.ckpt.")
     parser.add_argument("--output-root", type=Path, help="Output root for a new run.")
     parser.add_argument("--run-name", help="New run directory name; supports {timestep}.")
-    parser.add_argument("--max-updates", type=int, help="Override ppo.max_updates; allowed on V2 Resume.")
+    budget_flags = parser.add_mutually_exclusive_group()
+    budget_flags.add_argument("--max-steps", type=int, help="Override ppo.max_steps (PPO mini-batches).")
+    budget_flags.add_argument("--max-updates", type=int, help="Legacy: override ppo.max_updates (whole PPO cycles).")
     parser.add_argument("--no-eval", action="store_true", help="Skip evaluation.")
     args = parser.parse_args()
     if args.resume is not None:
@@ -635,7 +663,11 @@ def main() -> None:
         config["output"]["root"] = str(args.output_root)
     if args.run_name is not None:
         config["output"]["run_name"] = args.run_name
+    if args.max_steps is not None:
+        config["ppo"].pop("max_updates", None)
+        config["ppo"]["max_steps"] = args.max_steps
     if args.max_updates is not None:
+        config["ppo"].pop("max_steps", None)
         config["ppo"]["max_updates"] = args.max_updates
     if args.no_eval:
         config["evaluation"]["enabled"] = False
