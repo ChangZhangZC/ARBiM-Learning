@@ -90,7 +90,10 @@ run may therefore consume approximately **337.28 million** training
 environment steps (when every episode runs to its cap). This is only a
 capacity estimate, NOT a prediction of actual performance or episode length.
 The full 1,054-transition batch is materialized for PPO; confirm host and GPU
-memory before attempting a full training run.
+memory before attempting a full training run. The YAML's existing
+`evaluation.every_updates: 1` and `checkpoint.every_updates: 1` are kept
+unchanged in this minimal algorithm-alignment patch; for a long run, override
+both in a separate experiment YAML before starting (e.g. 50 and 10).
 
 `policy.n_action_steps: null` and `policy.num_inference_steps: null` preserve
 the validated IL checkpoint settings. Full chunk V1 uses
