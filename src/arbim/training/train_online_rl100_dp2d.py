@@ -371,7 +371,8 @@ def run(config: dict[str, Any], *, legacy_config: dict[str, Any] | None = None) 
         f"[INIT] actor=RL1002D H={span} K={policy.num_inference_steps} "
         f"device={cfg['policy']['device']} rollout_updates={updates} "
         f"env_steps={env_steps} decision_steps={decision_steps} ppo_steps={ppo_steps} "
-        f"native_lr_horizon={ppo.args.max_train_steps if cfg['ppo']['linear_lr_decay'] else 'adaptive_kl'}"
+        f"max_episode_env_steps={cfg['env']['max_episode_steps']} "
+        f"lr_horizon_decisions={ppo.args.max_train_steps if cfg['ppo']['linear_lr_decay'] else 'adaptive_kl'}"
     )
 
     stop_requested = False
