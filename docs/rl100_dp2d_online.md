@@ -26,18 +26,23 @@ python -m pip install tensorboard  # needed for torch.utils.tensorboard
 `tensorboardX` is a separate *upstream import dependency* and does not replace
 the `tensorboard` package required by the local IL-style TensorBoard sink.
 
-## Start a short smoke test
+## Smoke test (separate temporary YAML)
 
-The default Online YAML sets **10,000 PPO mini-batch steps** as the training budget, not 10,000 rollout/update cycles. The native PPO update routine still completes all epochs before stopping. The RL-100-aligned 1024-transition PPO batch is
-expensive in single-environment DuoBench; always use a short CLI override in
-an isolated new run to validate GPU memory and runtime first.
+Never change the experiment-default `configs/online/rl100_dp2d_hinge_chest.yaml`
+for smoke tests. Use `configs/online/tmp/rl100_dp2d_hinge_chest_smoke.yaml`:
+small training batch, short episodes (including partial chunks), reduced epochs,
+minimal evaluation, and isolated `/tmp/arbim_online_smoke` outputs.
+This test-only YAML is **not** for scientific comparisons.
 
 ```bash
-python -u -m arbim.training.train_online_rl100_dp2d \
-  --config configs/online/rl100_dp2d_hinge_chest.yaml \
-  --checkpoint /absolute/path/to/validated/Hinge-Chest/last.ckpt \
-  --max-steps 80
+python -u -m arbim.training.train_online_rl100_dp2d \\
+  --config configs/online/tmp/rl100_dp2d_hinge_chest_smoke.yaml \\
+  --checkpoint /absolute/path/to/validated/Hinge-Chest/last.ckpt
 ```
+
+The smoke budget counts PPO mini-batch steps, checked only at the end of a full
+PPO rollout/update cycle. The number of cycles depends on the checkpoint's
+actual chunk size; verify the `[PPO] rollout_update` count before using its output.
 
 For a run using the 10,000 PPO mini-batch-step budget, the core parameters are:
 
@@ -58,11 +63,11 @@ ppo:
 rollout:
   seed: 42
 evaluation:
-  every_updates: 50
+  every_updates: 25     # complete PPO rollout/update cycles
   seed: 100042           # fixed seeds across checkpoint comparisons
-  num_episodes: 10
+  num_episodes: 30       # experiment default, matching native Online example
 checkpoint:
-  every_updates: 50
+  every_updates: 1      # recoverable after each complete PPO update
 ```
 
 A more concise CLI override is also supported:
@@ -85,9 +90,7 @@ episode (the last chunk executes only 20 environment steps), requiring 64 comple
 **1,024** transitions, or 32,000 environment steps per cycle. Five epochs with `mini_batch_size=128` yield **40 PPO mini-batch steps per cycle**. A 10,000-step budget corresponds to about **250 full cycles** and about **8 million training environment steps** in this no-early-success example, not 10,000 cycles. This is only a
 capacity estimate, NOT a prediction of actual performance or episode length.
 The full 1,024-transition batch is materialized for PPO; confirm host and GPU
-memory before attempting a full training run. The YAML's existing
-`evaluation.every_updates: 1` and `checkpoint.every_updates: 1` count full rollout/update cycles and are kept unchanged; for a long run, override
-both in a separate experiment YAML before starting (e.g. 50 and 10).
+memory before attempting a full training run. The experiment YAML evaluates 30 episodes every 25 complete PPO updates; the resumable checkpoint remains saved after every complete update. Test-only overrides stay in the separate smoke YAML.
 
 `policy.n_action_steps: null` and `policy.num_inference_steps: null` preserve
 the validated IL checkpoint settings. Full chunk V1 uses
@@ -105,8 +108,9 @@ outputs/online/hinge_chest/run_YYYYMMDD_HHMMSS/
   metrics.jsonl             # structured rollout/ppo/evaluation/checkpoint events
   metrics.uncommitted.jsonl # optional archived events newer than last durable update
   train.log                 # compact ARBiM terminal summaries
-  tensorboard/              # PPO-update indexed scalar events (new runs)
-  tensorboard_ppo_updates/  # only when migrating an old env-step indexed run
+  tensorboard_ppo_steps/    # new mini-batch-step indexed scalar events
+  tensorboard/              # legacy whole-update indexed events
+  tensorboard_ppo_updates/  # legacy env-step migration
   diagnostics/ratio_stats.csv # append-only native ratio data, when enabled
   diagnostics/ratio.uncommitted.csv # optional archived uncommitted ratio rows
   checkpoints/
@@ -171,13 +175,12 @@ tensorboard --logdir outputs/online --host 127.0.0.1 --port 6006
 ```
 
 Use SSH port forwarding when accessing from another computer rather than
-publicly exposing the service. The local TensorBoard sink reuses the IL
-`MetricLogger`; metrics retain event-based JSONL separately. An old pre-schema
-run's TensorBoard files are kept unchanged, while new PPO-update-indexed
-events from its Resume go into `tensorboard_ppo_updates/`.
+publicly exposing the service. The local TensorBoard sink reuses the IL `MetricLogger`.
+Existing TensorBoard files remain separate: new PPO-step runs write
+`tensorboard_ppo_steps/`; legacy runs retain `tensorboard/` or
+`tensorboard_ppo_updates/` after an env-step-to-update migration.
 
-All TensorBoard scalar groups use completed **PPO update count** as their
-x-axis. Training Rollout episode-level records remain in `metrics.jsonl`;
+New PPO-step runs use completed **PPO mini-batch steps** as the TensorBoard x-axis; this is also the Resume purge point. Legacy `ppo.max_updates` runs retain whole-update x-axis semantics. Training Rollout episode-level records remain in `metrics.jsonl`;
 `rollout/` curves are the **mean over episodes collected for each update**,
 not one point per episode. This keeps Resume/purge semantics well defined.
 
@@ -232,9 +235,10 @@ shape/ratio boundaries.
   distinct from ARBiM `ppo.max_steps` (and legacy `ppo.max_updates`). Rather than expose a second
   ambiguous training budget, the adapter derives it as
   `ceil(max_steps / (K_epochs * ceil(batch_size / mini_batch_size))) *
-  ceil(batch_size / ceil(max_episode_steps / n_action_steps)) *
-  ceil(max_episode_steps / n_action_steps)` decision steps in the new mode.
-  With current example defaults (H=32): `250 * 64 * 16 = 256,000` decision steps.
+  (batch_size + ceil(max_episode_steps / n_action_steps) - 1)`
+  decision steps in the new mode. This conservative bound includes the case
+  where the last full episode overshoots the buffer threshold.
+  With example defaults and H=32: `250 * (1024 + 16 - 1) = 259,750` decisions.
   The unmodified RL-100 `lr_decay(total_steps)` is invoked after each PPO
   update with the cumulative **actual action-chunk decisions** collected,
   capped defensively at the derived horizon. The schedule may therefore
