@@ -32,6 +32,7 @@ from arbim.rl.online.ppo_bridge import build_online_ppo, update_online_ppo, coun
 from arbim.rl.online.rollout import collect_online_episode
 from arbim.rl.online.telemetry import (
     OnlineTelemetry, native_ratio_summary, append_native_ratio_records,
+    enable_ratio_diagnostics,
 )
 from arbim.rl.rewards.duobench_hinge_chest import build_reward_evaluator
 
@@ -301,6 +302,7 @@ def run(config: dict[str, Any], *, legacy_config: dict[str, Any] | None = None) 
     settings["enable_ratio_logging"] = bool(ratio_cfg.get("enabled", False))
     settings["ratio_log_every_updates"] = int(ratio_cfg.get("every_updates", 5))
     ppo = build_online_ppo(policy, settings)
+    enable_ratio_diagnostics(ppo)
     eval_policy = ppo._policy
     evaluator = build_reward_evaluator(cfg["reward"]["mode"])
     buffer = OnlinePPOBuffer(
@@ -366,7 +368,7 @@ def run(config: dict[str, Any], *, legacy_config: dict[str, Any] | None = None) 
     )
     logger.message(
         f"[INIT] actor=RL1002D H={span} K={policy.num_inference_steps} "
-        f"device={cfg['policy']['device']} update={updates}/{cfg['ppo']['max_updates']} "
+        f"device={cfg['policy']['device']} rollout_updates={updates} "
         f"env_steps={env_steps} decision_steps={decision_steps} ppo_steps={ppo_steps} "
         f"native_lr_horizon={ppo.args.max_train_steps if cfg['ppo']['linear_lr_decay'] else 'adaptive_kl'}"
     )
@@ -454,6 +456,7 @@ def run(config: dict[str, Any], *, legacy_config: dict[str, Any] | None = None) 
                 min(decision_steps, ppo.args.max_train_steps)
                 if cfg["ppo"]["linear_lr_decay"] else decision_steps
             )
+            # One PPO step = one mini-batch pass, not an individual Actor DDIM optimizer step.
             batch_ppo_steps = count_ppo_steps(
                 current_batch_transitions, cfg["ppo"]["mini_batch_size"], cfg["ppo"]["K_epochs"],
             )
@@ -536,9 +539,10 @@ def run(config: dict[str, Any], *, legacy_config: dict[str, Any] | None = None) 
                         "changed_at": datetime.now().isoformat(),
                         "at_updates": updates, "at_env_steps": env_steps,
                         "old_ppo_budget": pending_config.get("ppo", {}).get(
-                            "max_updates", pending_config.get("rollout", {}).get("max_updates")
+                            "max_steps", pending_config.get("ppo", {}).get(
+                                "max_updates", pending_config.get("rollout", {}).get("max_updates"))
                         ),
-                        "new_ppo_budget": frozen["ppo"]["max_updates"],
+                        "new_ppo_budget": frozen["ppo"].get("max_steps", frozen["ppo"].get("max_updates")),
                         "old_logging": pending_config.get("logging"),
                         "new_logging": frozen.get("logging"),
                     }
@@ -664,9 +668,13 @@ def main() -> None:
     if args.run_name is not None:
         config["output"]["run_name"] = args.run_name
     if args.max_steps is not None:
+        if resume_ckpt is not None and "max_steps" not in config["ppo"]:
+            parser.error("Cannot change a legacy Update-budget run into a PPO-step-budget Resume.")
         config["ppo"].pop("max_updates", None)
         config["ppo"]["max_steps"] = args.max_steps
     if args.max_updates is not None:
+        if resume_ckpt is not None and "max_updates" not in config["ppo"]:
+            parser.error("Cannot change PPO-step-budget run into legacy Update-budget Resume.")
         config["ppo"].pop("max_steps", None)
         config["ppo"]["max_updates"] = args.max_updates
     if args.no_eval:
