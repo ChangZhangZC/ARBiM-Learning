@@ -25,8 +25,11 @@ class FakePPO:
         self._policy.n_action_steps = 1
         self._policy.num_inference_steps = 10
         self.old_synced = False
+        self._old_policy = copy.deepcopy(self._policy)
 
     def set_old_policy(self):
+        # Match RL-100 native PPO: restore its frozen reference policy from Actor.
+        self._old_policy = copy.deepcopy(self._policy)
         self.old_synced = True
 
 
@@ -71,6 +74,11 @@ def test_online_training_state_round_trip(tmp_path, monkeypatch):
     counts = restore_online_checkpoint(other, payload)
     assert counts == (2, 4, 50)
     assert other.old_synced
+    assert all(not p.requires_grad for p in other._old_policy.parameters())
+    assert not other._old_policy.training
+    assert all(torch.equal(a, b) for a, b in zip(
+        other._policy.parameters(), other._old_policy.parameters()
+    ))
     assert [optimizer for optimizer, _ in calls] == [
         other.optimizer_actor, other.optimizer_critic
     ]
