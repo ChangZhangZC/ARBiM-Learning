@@ -45,6 +45,7 @@ def online_resume_contract(config: Mapping[str, Any]) -> dict[str, Any]:
     # Extending this budget changes the LR trajectory and is not a strict Resume.
     if not ppo.get("linear_lr_decay", False):
         ppo.pop("max_updates", None)
+        ppo.pop("max_steps", None)
     return {
         "env": copy.deepcopy(config["env"]),  # includes common episode limit
         "policy": policy,
