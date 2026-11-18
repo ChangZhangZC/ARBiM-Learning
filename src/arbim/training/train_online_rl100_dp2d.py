@@ -556,6 +556,7 @@ def run(config: dict[str, Any], *, legacy_config: dict[str, Any] | None = None) 
                 save_inference_snapshot(
                     snapshot, ppo, il_contract=il_contract,
                     updates=updates, env_steps=env_steps, episodes=episodes,
+                    ppo_steps=ppo_steps,
                 )
                 prune_policy_snapshots(checkpoint_dir, checkpoint_cfg.get("keep_last", 3))
                 logger.event(
