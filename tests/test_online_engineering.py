@@ -26,21 +26,28 @@ def profile():
     return cfg
 
 
-def test_ppo_updates_are_the_only_training_budget():
+def test_minibatch_steps_are_the_new_training_budget():
     cfg = profile()
-    cfg["ppo"]["max_updates"] = 10000
     validate_config(cfg)
+    assert not _budget_reached(cfg, updates=250, ppo_steps=9999)
+    assert _budget_reached(cfg, updates=250, ppo_steps=10000)
+    cfg["env"]["max_episode_steps"] = 500
+    cfg["evaluation"]["every_updates"] = 50
+    assert not _budget_reached(cfg, updates=1000, ppo_steps=9999)
+    # Old run budgets retain the old complete-rollout/update semantics.
+    cfg["ppo"].pop("max_steps")
+    cfg["ppo"]["max_updates"] = 10000
     assert not _budget_reached(cfg, updates=9999)
     assert _budget_reached(cfg, updates=10000)
-    # Total environmental interactions and Eval steps do not affect stopping.
-    cfg["env"]["max_episode_steps"] = 992
-    cfg["evaluation"]["every_updates"] = 50
-    assert not _budget_reached(cfg, updates=9999)
 
 
-def test_ppo_budget_requires_positive_updates():
+def test_ppo_budget_requires_positive_steps():
     cfg = profile()
-    cfg["ppo"]["max_updates"] = None
+    cfg["ppo"]["max_steps"] = None
+    with pytest.raises(ValueError, match="ppo.max_steps"):
+        validate_config(cfg)
+    cfg["ppo"].pop("max_steps")
+    cfg["ppo"]["max_updates"] = 0
     with pytest.raises(ValueError, match="ppo.max_updates"):
         validate_config(cfg)
 
@@ -56,6 +63,8 @@ def test_episode_limit_is_unified_and_old_budgets_are_rejected():
 
 def test_old_run_yaml_can_be_migrated_without_changing_episode_limit():
     cfg = profile()
+    cfg["ppo"].pop("max_steps")
+    cfg["ppo"]["max_updates"] = 10
     old = copy.deepcopy(cfg)
     cap = old["env"].pop("max_episode_steps")
     old["rollout"].update(max_env_steps=cap, max_updates=old["ppo"].pop("max_updates"),
@@ -243,7 +252,7 @@ def test_legacy_resume_preserves_old_tensorboard_event_axis(tmp_path, monkeypatc
 def test_native_chunk_ppo_defaults_and_decision_lr_horizon():
     cfg = profile()
     ppo = cfg["ppo"]
-    assert ppo["max_updates"] == 10000
+    assert ppo["max_steps"] == 10000
     assert ppo["batch_size"] == 1024
     assert ppo["mini_batch_size"] == 128
     assert ppo["K_epochs"] == 5
@@ -259,21 +268,21 @@ def test_native_chunk_ppo_defaults_and_decision_lr_horizon():
     assert ppo["fix_encoder"] is False  # RL-100 Chunk Online default
     assert ppo["share_encoder"] is False
     validate_config(cfg)
-    # 992 / 32 = 31 decisions/episode; ceil(1024 / 31) = 34 episodes.
-    assert _linear_lr_total_steps(cfg, action_span=32) == 1054 * 10000
-    assert _linear_lr_total_steps(cfg, action_span=16) == 1054 * 10000
+    # A maximum of 250 full PPO cycles; each can collect up to 1024 decisions.
+    assert _linear_lr_total_steps(cfg, action_span=32) == 256000
+    assert _linear_lr_total_steps(cfg, action_span=16) == 256000
 
 
-def test_linear_lr_horizon_uses_transition_count_not_environment_steps():
+def test_linear_lr_horizon_uses_minibatch_budget_and_partial_chunks():
     cfg = profile()
-    cfg["ppo"]["max_updates"] = 2
+    cfg["ppo"]["max_steps"] = 80
     cfg["ppo"]["batch_size"] = 32
-    assert _linear_lr_total_steps(cfg, action_span=32) == 62 * 2
+    cfg["ppo"]["mini_batch_size"] = 8
+    assert _linear_lr_total_steps(cfg, action_span=32) == 32 * 4
     cfg["ppo"]["batch_size"] = 64
-    assert _linear_lr_total_steps(cfg, action_span=32) == 93 * 2
+    assert _linear_lr_total_steps(cfg, action_span=32) == 64 * 2
     cfg["env"]["max_episode_steps"] = 990
-    with pytest.raises(ValueError, match="divisible"):
-        _linear_lr_total_steps(cfg, action_span=32)
+    assert _linear_lr_total_steps(cfg, action_span=32) == 93 * 2
 
 
 def test_linear_lr_rejects_bad_config_type():
