@@ -84,11 +84,17 @@ class OnlineTelemetry:
         self, cfg: Mapping[str, Any], run_dir: Path, *,
         resumed: bool, resume_updates: int, resume_env_steps: int,
         migrate_legacy_tb: bool = False,
+        step_axis: str = "updates", resume_ppo_steps: int | None = None,
     ) -> None:
         self.run_dir = run_dir
         self.metrics = run_dir / "metrics.jsonl"
         self.console = run_dir / "train.log"
         self.jsonl_enabled = bool(cfg.get("jsonl", True))
+        if step_axis not in ("updates", "ppo_steps"):
+            raise ValueError("TensorBoard step_axis must be 'updates' or 'ppo_steps'.")
+        if step_axis == "ppo_steps" and (type(resume_ppo_steps) is not int or resume_ppo_steps < 0):
+            raise ValueError("PPO-step TensorBoard requires a nonnegative resume_ppo_steps.")
+        self.step_axis = step_axis
         if resumed:
             reconcile_online_metrics(
                 self.metrics, updates=resume_updates, env_steps=resume_env_steps
@@ -97,13 +103,15 @@ class OnlineTelemetry:
                 run_dir / "diagnostics" / "ratio_stats.csv",
                 updates=resume_updates, env_steps=resume_env_steps,
             )
-        # Legacy Task 7 events use env_steps as their TensorBoard x-axis.
-        # Never silently mix them with PPO-update indexed events.
-        tb_dir = (
-            run_dir / "tensorboard_ppo_updates"
-            if migrate_legacy_tb or (run_dir / "tensorboard_ppo_updates").exists()
-            else run_dir / "tensorboard"
-        )
+        # Keep the new PPO-mini-batch time axis separate from old runs that
+        # wrote complete PPO updates or environment steps to TensorBoard.
+        if step_axis == "ppo_steps":
+            tb_dir = run_dir / "tensorboard_ppo_steps"
+        elif migrate_legacy_tb or (run_dir / "tensorboard_ppo_updates").exists():
+            tb_dir = run_dir / "tensorboard_ppo_updates"
+        else:
+            tb_dir = run_dir / "tensorboard"
+        resume_step = resume_ppo_steps if step_axis == "ppo_steps" else resume_updates
         tb_cfg = dict(cfg["tensorboard"])
         tb_cfg["log_dir"] = str(tb_dir)
         logging_cfg = {
@@ -114,10 +122,11 @@ class OnlineTelemetry:
             }
         }
         self.sink = MetricLogger(
-            logging_cfg, run_dir, resumed=resumed, resume_step=resume_updates
+            logging_cfg, run_dir, resumed=resumed, resume_step=resume_step
         )
         if resumed:
-            self.message(f"[RESUME] update={resume_updates} env_steps={resume_env_steps}")
+            self.message(f"[RESUME] update={resume_updates} env_steps={resume_env_steps} "
+                         f"tb_axis={step_axis} tb_step={resume_step}")
 
     def message(self, message: str) -> None:
         print(message, flush=True)
@@ -132,7 +141,7 @@ class OnlineTelemetry:
             with self.metrics.open("a", encoding="utf-8") as out:
                 out.write(json.dumps(dict(record), ensure_ascii=False, allow_nan=False) + "\n")
         if groups:
-            step = int(record["updates"])  # primary Online training axis is PPO updates
+            step = int(record[self.step_axis])  # same axis for all Online scalar groups
             for group, values in groups.items():
                 scalars = {
                     name: value for name, value in values.items()
