@@ -7,7 +7,7 @@ collect on-policy DuoBench trajectories, and optimize with the pinned native
 `BehaviorProximalPolicyOptimization.dp_align_update_no_share()`.
 
 Task 7 adds run management, local TensorBoard, compact console summaries,
-an explicit PPO-update training budget and strict resumable checkpoints. It does
+an explicit PPO mini-batch-step training budget and strict resumable checkpoints. It does
 **not** add offline IQL, dynamics, distillation, BC/reconstruction loss, DDP,
 asymmetric updates, or persistent online trajectory datasets. The native PPO
 mathematics and diffusion sampler are not modified.
@@ -28,8 +28,7 @@ the `tensorboard` package required by the local IL-style TensorBoard sink.
 
 ## Start a short smoke test
 
-The default online YAML now sets **10,000 complete PPO updates** to match the
-requested long-run budget. The RL-100-aligned 1024-transition PPO batch is
+The default Online YAML sets **10,000 PPO mini-batch steps** as the training budget, not 10,000 rollout/update cycles. The native PPO update routine still completes all epochs before stopping. The RL-100-aligned 1024-transition PPO batch is
 expensive in single-environment DuoBench; always use a short CLI override in
 an isolated new run to validate GPU memory and runtime first.
 
@@ -37,16 +36,16 @@ an isolated new run to validate GPU memory and runtime first.
 python -u -m arbim.training.train_online_rl100_dp2d \
   --config configs/online/rl100_dp2d_hinge_chest.yaml \
   --checkpoint /absolute/path/to/validated/Hinge-Chest/last.ckpt \
-  --max-updates 2
+  --max-steps 80
 ```
 
-For an experiment using the full 10,000-update budget, the core parameters are:
+For a run using the 10,000 PPO mini-batch-step budget, the core parameters are:
 
 ```yaml
 env:
-  max_episode_steps: 992  # same cap for training rollout and evaluation episodes
+  max_episode_steps: 500  # same cap for training rollout and evaluation episodes
 ppo:
-  max_updates: 10000     # 10000 complete PPO update cycles, NOT environment steps
+  max_steps: 10000       # PPO mini-batch passes, NOT environment steps or update cycles
   batch_size: 1024       # native RL-100 Chunk Online setting
   mini_batch_size: 128
   K_epochs: 5            # minibatch passes inside EACH PPO update
@@ -72,27 +71,22 @@ A more concise CLI override is also supported:
 python -u -m arbim.training.train_online_rl100_dp2d \
   --config configs/online/rl100_dp2d_hinge_chest.yaml \
   --checkpoint /absolute/path/to/validated/last.ckpt \
-  --max-updates 10000 \
+  --max-steps 10000 \
   --run-name 'run_{timestep}'
 ```
 
-`ppo.max_updates` is the sole stopping budget. Each PPO update collects whole
-training episodes until the buffer contains at least `ppo.batch_size` action-
-chunk transitions, then runs `ppo.K_epochs` minibatch passes. The actual
+New runs stop at `ppo.max_steps` completed mini-batch passes, checked only after a full native PPO update cycle. Legacy runs with `ppo.max_updates` retain their original whole-cycle budget. Each rollout/update cycle collects whole episodes until the buffer has at least `ppo.batch_size` chunk transitions, then runs `ppo.K_epochs` epochs of mini-batches. The actual
 number of environmental interactions is recorded separately as `env_steps`;
 independent evaluation episodes do NOT contribute to this counter.
 
-For example, with `max_episode_steps=992`, `n_action_steps=32`,
-`batch_size=1024` and no early success, 31 transitions are collected per
-episode, requiring 34 complete episodes per PPO update. The actual buffer is
-**1,054** transitions, or 33,728 environment steps per update. A 10,000-update
-run may therefore consume approximately **337.28 million** training
-environment steps (when every episode runs to its cap). This is only a
+For example, with `max_episode_steps=500`, `n_action_steps=32`,
+`batch_size=1024` and no early success, 16 transitions are collected per
+episode (the last chunk executes only 20 environment steps), requiring 64 complete episodes per rollout/update cycle. The actual buffer is
+**1,024** transitions, or 32,000 environment steps per cycle. Five epochs with `mini_batch_size=128` yield **40 PPO mini-batch steps per cycle**. A 10,000-step budget corresponds to about **250 full cycles** and about **8 million training environment steps** in this no-early-success example, not 10,000 cycles. This is only a
 capacity estimate, NOT a prediction of actual performance or episode length.
-The full 1,054-transition batch is materialized for PPO; confirm host and GPU
+The full 1,024-transition batch is materialized for PPO; confirm host and GPU
 memory before attempting a full training run. The YAML's existing
-`evaluation.every_updates: 1` and `checkpoint.every_updates: 1` are kept
-unchanged in this minimal algorithm-alignment patch; for a long run, override
+`evaluation.every_updates: 1` and `checkpoint.every_updates: 1` count full rollout/update cycles and are kept unchanged; for a long run, override
 both in a separate experiment YAML before starting (e.g. 50 and 10).
 
 `policy.n_action_steps: null` and `policy.num_inference_steps: null` preserve
@@ -199,12 +193,9 @@ not one point per episode. This keeps Resume/purge semantics well defined.
 - `diagnostics/`: upstream native ratio quantile/mean and logprob delta
 
 The pinned native PPO code exposes detailed ratio diagnostics optionally.
-The append-only `diagnostics/ratio_stats.csv` preserves those native records
-without changing ratio calculation. Approx-KL, clip fraction and full
-advantage/value distributions are **not yet exposed** by the V1 native
-update return interface. Do not infer them from actor loss or fabricate them.
-More detailed diagnostics would require a separate read-only instrumentation
-review.
+The append-only `diagnostics/ratio_stats.csv` preserves native records and adds `sample_size`, `approx_kl`, and `clip_fraction` without changing ratio calculation. An ARBiM-only read-only diagnostics wrapper now records `approx_kl` and
+`clip_fraction` from the exact native Ratio tensors, without changing PPO loss.
+Full advantage/value distributions are not exposed by the native update API.
 
 Training and evaluation differ: training samples stochastic DDIM and
 Eval executes deterministic inference with fixed seeds, so individual
@@ -231,12 +222,11 @@ shape/ratio boundaries.
 
 ## Terminology and old-run compatibility
 
-- `ppo.max_updates`: total number of **complete PPO update cycles**; 10,000
-  here means exactly 10,000 PPO updates, barring manual interrupt.
-- `ppo.K_epochs`: repeated optimization passes over one collected on-policy
-  buffer, not the number of episodes or PPO update cycles.
+- `ppo.max_steps`: total number of **PPO mini-batch passes**; one 1024-transition cycle with mini-batch 128 and five epochs accounts for 40 PPO steps. Native PPO finishes its current cycle before checking the budget, so the final step counter may overshoot. Legacy `ppo.max_updates` still means complete rollout/update cycles.
+- `ppo.K_epochs`: repeated optimization passes over the same on-policy
+  buffer. Actor optimizer steps additionally multiply by DDIM inference steps; Critic optimizer steps equal PPO mini-batch steps.
 - `env.max_episode_steps`: common per-episode cap used by training rollout
-  and evaluation; it must be divisible by the effective action chunk size.
+  and evaluation; it need not be divisible by the action chunk length. The final partial chunk uses its actual executed span for GAE.
 - `evaluation.every_updates` / `checkpoint.every_updates`: frequency in PPO
   updates, not environment steps. Evaluation interactions are excluded from
   training `env_steps`.
@@ -244,9 +234,10 @@ shape/ratio boundaries.
 - Native `ppo.max_train_steps` is a **decision-step LR-schedule horizon**,
   distinct from ARBiM `ppo.max_updates`. Rather than expose a second
   ambiguous training budget, the adapter derives it as
-  `max_updates * ceil(batch_size / max_episode_decisions) * max_episode_decisions`,
-  where `max_episode_decisions = env.max_episode_steps / n_action_steps`.
-  With current defaults: `10000 * 34 * 31 = 10,540,000` decision steps.
+  `ceil(max_steps / (K_epochs * ceil(batch_size / mini_batch_size))) *
+  ceil(batch_size / ceil(max_episode_steps / n_action_steps)) *
+  ceil(max_episode_steps / n_action_steps)` decision steps in the new mode.
+  With current example defaults (H=32): `250 * 64 * 16 = 256,000` decision steps.
   The unmodified RL-100 `lr_decay(total_steps)` is invoked after each PPO
   update with the cumulative **actual action-chunk decisions** collected,
   capped defensively at the derived horizon. The schedule may therefore
