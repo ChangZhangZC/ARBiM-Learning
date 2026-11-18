@@ -103,6 +103,7 @@ def save_online_checkpoint(
     path: str | Path, ppo: Any, *, config: Mapping[str, Any],
     updates: int, episode_count: int, env_steps: int,
     original_checkpoint: str, decision_steps: int | None = None,
+    ppo_steps: int | None = None,
 ) -> None:
     """Call only AFTER a successful PPO update, with an emptied on-policy buffer."""
     _atomic_save(path, {
@@ -113,6 +114,7 @@ def save_online_checkpoint(
         "updates": int(updates), "episodes": int(episode_count),
         "env_steps": int(env_steps),
         **({"decision_steps": int(decision_steps)} if decision_steps is not None else {}),
+        **({"ppo_steps": int(ppo_steps)} if ppo_steps is not None else {}),
         "policy": ppo._policy.state_dict(),
         "critic": ppo.critic.state_dict(),
         "optimizer_actor": ppo.optimizer_actor.state_dict(),
@@ -154,6 +156,11 @@ def read_online_checkpoint(
         type(payload["decision_steps"]) is not int or payload["decision_steps"] < 0
     ):
         raise ValueError("Invalid Online checkpoint counter: decision_steps.")
+    if "max_steps" in config["ppo"]:
+        if type(payload.get("ppo_steps")) is not int or payload["ppo_steps"] < 0:
+            raise ValueError("PPO-step-budget Resume requires the saved ppo_steps counter.")
+        if payload["ppo_steps"] < payload["updates"]:
+            raise ValueError("Inconsistent Online PPO minibatch step counter.")
     if config["ppo"].get("linear_lr_decay", False):
         if "decision_steps" not in payload:
             raise ValueError("Linear-LR Online Resume requires a saved decision_steps counter.")
