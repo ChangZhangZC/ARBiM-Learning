@@ -355,6 +355,8 @@ def run(config: dict[str, Any], *, legacy_config: dict[str, Any] | None = None) 
             logging_settings, run_dir, resumed=resume_path is not None,
             resume_updates=updates, resume_env_steps=env_steps,
             migrate_legacy_tb=legacy_config is not None,
+            step_axis="ppo_steps" if "max_steps" in cfg["ppo"] else "updates",
+            resume_ppo_steps=ppo_steps if "max_steps" in cfg["ppo"] else None,
         )
     finally:
         _restore_rng(rng)
@@ -425,6 +427,7 @@ def run(config: dict[str, Any], *, legacy_config: dict[str, Any] | None = None) 
                 record = {
                     "event": "rollout", "updates": updates, "episodes": episodes,
                     "env_steps": env_steps, "decision_steps": decision_steps + buffer.count,
+                    "ppo_steps": ppo_steps,
                     **result, "elapsed_s": elapsed,
                 }
                 logger.event(
@@ -562,7 +565,7 @@ def run(config: dict[str, Any], *, legacy_config: dict[str, Any] | None = None) 
                 logger.event(
                     "checkpoint",
                     {"event": "checkpoint", "updates": updates, "episodes": episodes,
-                     "env_steps": env_steps, "path": str(snapshot)},
+                     "env_steps": env_steps, "ppo_steps": ppo_steps, "path": str(snapshot)},
                     summary=f"[SAVE] update={updates} env_steps={env_steps} last.ckpt + {snapshot.name}",
                 )
             evaluation_cfg = cfg["evaluation"]
@@ -594,7 +597,7 @@ def run(config: dict[str, Any], *, legacy_config: dict[str, Any] | None = None) 
                 mean_stage = _mean_eval_stage(folder)
                 record = {
                     "event": "evaluation", "updates": updates, "episodes": episodes,
-                    "env_steps": env_steps, "seed": eval_seed,
+                    "env_steps": env_steps, "ppo_steps": ppo_steps, "seed": eval_seed,
                     **summary, "mean_stage": mean_stage, "elapsed_s": eval_elapsed,
                 }
                 logger.event(
