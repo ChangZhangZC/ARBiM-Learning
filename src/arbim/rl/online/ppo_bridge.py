@@ -29,6 +29,10 @@ def build_online_ppo(policy: Any, settings: Mapping[str, Any]):
         raise ValueError("PPO mini_batch_size cannot exceed batch_size.")
     if cfg.get("distill_phase", "off") != "off":
         raise ValueError("Task 6 V1 excludes online distillation.")
+    if cfg["linear_lr_decay"] and (
+        type(cfg.get("max_train_steps")) is not int or cfg["max_train_steps"] < 1
+    ):
+        raise ValueError("Native linear LR decay requires a positive decision-step horizon.")
     device = next(policy.parameters()).device
     feature_dim = int(policy.obs_feature_dim) * int(policy.n_obs_steps)
     critic = ValueMLP(
@@ -56,7 +60,7 @@ def build_online_ppo(policy: Any, settings: Mapping[str, Any]):
         use_grad_clip=True, is_clip_value=bool(cfg["clip_value"]),
         use_lr_decay=bool(cfg["linear_lr_decay"]),
         v_encoder=False, iterations=0,
-        max_train_steps=int(cfg.get("max_train_steps", 100000)),  # native interface; linear LR decay disabled
+        max_train_steps=int(cfg.get("max_train_steps", 100000)),  # native scheduler, counts chunk decisions
         enable_ratio_logging=bool(cfg.get("enable_ratio_logging", False)),
         ratio_log_every_updates=int(cfg.get("ratio_log_every_updates", 10)),
         ratio_plot_on_final_flush=False,

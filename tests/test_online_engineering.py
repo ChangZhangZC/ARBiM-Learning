@@ -13,7 +13,7 @@ from arbim.rl.online.telemetry import (
 )
 from arbim.training.train_online_rl100_dp2d import (
     _budget_reached, _new_run_dir, _frozen_config, _file_sha256,
-    normalize_online_config, validate_config,
+    normalize_online_config, validate_config, _linear_lr_total_steps,
 )
 
 
@@ -238,3 +238,46 @@ def test_legacy_resume_preserves_old_tensorboard_event_axis(tmp_path, monkeypatc
     sink.close()
     assert observed["purge"] == 2
     assert observed["tb"].endswith("tensorboard_ppo_updates")
+
+
+def test_native_chunk_ppo_defaults_and_decision_lr_horizon():
+    cfg = profile()
+    ppo = cfg["ppo"]
+    assert ppo["max_updates"] == 10000
+    assert ppo["batch_size"] == 1024
+    assert ppo["mini_batch_size"] == 128
+    assert ppo["K_epochs"] == 5
+    assert ppo["epsilon"] == pytest.approx(0.2)
+    assert ppo["gamma"] == pytest.approx(0.997)
+    assert ppo["gae_lambda"] == pytest.approx(0.95)
+    assert ppo["actor_lr"] == pytest.approx(2e-6)
+    assert ppo["critic_lr"] == pytest.approx(3e-4)
+    assert ppo["value_hidden_dim"] == 512
+    assert ppo["value_depth"] == 3
+    assert ppo["clip_value"] is True
+    assert ppo["linear_lr_decay"] is True
+    assert ppo["fix_encoder"] is True  # explicit V1 difference, not silently altered
+    assert ppo["share_encoder"] is True
+    validate_config(cfg)
+    # 992 / 32 = 31 decisions/episode; ceil(1024 / 31) = 34 episodes.
+    assert _linear_lr_total_steps(cfg, action_span=32) == 1054 * 10000
+    assert _linear_lr_total_steps(cfg, action_span=16) == 1054 * 10000
+
+
+def test_linear_lr_horizon_uses_transition_count_not_environment_steps():
+    cfg = profile()
+    cfg["ppo"]["max_updates"] = 2
+    cfg["ppo"]["batch_size"] = 32
+    assert _linear_lr_total_steps(cfg, action_span=32) == 62 * 2
+    cfg["ppo"]["batch_size"] = 64
+    assert _linear_lr_total_steps(cfg, action_span=32) == 93 * 2
+    cfg["env"]["max_episode_steps"] = 990
+    with pytest.raises(ValueError, match="divisible"):
+        _linear_lr_total_steps(cfg, action_span=32)
+
+
+def test_linear_lr_rejects_bad_config_type():
+    cfg = profile()
+    cfg["ppo"]["linear_lr_decay"] = 1
+    with pytest.raises(ValueError, match="linear_lr_decay"):
+        validate_config(cfg)
