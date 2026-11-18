@@ -61,8 +61,9 @@ def validate_config(cfg: Mapping[str, Any]) -> None:
             raise ValueError(f"ppo.{key} must be a positive finite number.")
     if ppo["gamma"] > 1 or ppo["gae_lambda"] > 1:
         raise ValueError("ppo.gamma and ppo.gae_lambda must be <= 1.")
-    if ppo.get("fix_encoder") is not True or ppo.get("share_encoder") is not True:
-        raise ValueError("Task 6 V1 freezes and shares the native RGB encoder.")
+    for flag in ("fix_encoder", "share_encoder"):
+        if type(ppo.get(flag)) is not bool:
+            raise ValueError(f"ppo.{flag} must be boolean.")
     if type(ppo.get("linear_lr_decay")) is not bool:
         raise ValueError("ppo.linear_lr_decay must be boolean.")
     if ppo["value_depth"] < 2:
@@ -393,6 +394,7 @@ def run(config: dict[str, Any], *, legacy_config: dict[str, Any] | None = None) 
                     gamma=float(cfg["ppo"]["gamma"]),
                     max_env_steps=cfg["env"]["max_episode_steps"],
                     seed=seed + episodes,
+                    fix_encoder=cfg["ppo"]["fix_encoder"],
                 )
                 if result["transitions"] < 1:
                     raise RuntimeError("Online episode yielded no transitions.")
@@ -419,6 +421,8 @@ def run(config: dict[str, Any], *, legacy_config: dict[str, Any] | None = None) 
                 # Stopping early can produce a one-sample advantage/std NaN.
 
             ppo._policy.train()
+            # Native RL-100 leaves its RGB Encoder in eval mode even when
+            # fix_encoder=False: eval() changes BN/dropout, not gradient flow.
             ppo._policy.obs_encoder.eval()
             update_start = time.perf_counter()
             # RL-100 native lr_decay(total_steps) expects POLICY DECISIONS.
