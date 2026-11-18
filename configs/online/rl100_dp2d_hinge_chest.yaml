@@ -51,7 +51,7 @@ ppo:
   min_lr_critic: 0.0001   # native default; unused while linear decay is enabled
   max_lr_critic: 0.001    # native default; unused while linear decay is enabled
 reward:
-  mode: env_raw          # only for end-to-end Smoke; not a validated scientific reward
+  mode: stage_increment  # env_raw / stage_increment; weights defined in reward Python
 
 rollout:
   seed: 42              # seeds for on-policy training episodes
