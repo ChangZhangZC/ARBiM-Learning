@@ -6,7 +6,6 @@ checkpoint reconstruction and shared-versus-independent inputs be checked.
 """
 from __future__ import annotations
 
-from copy import deepcopy
 from pathlib import Path
 
 import pytest
@@ -130,6 +129,13 @@ def test_four_modes_actor_and_critic_gradient_isolation(fix_encoder, share_encod
 
     ppo.optimizer_actor.zero_grad()
     ppo.optimizer_critic.zero_grad()
+    # Positive ValueMLP weights avoid flaky "dead ReLU" gradient checks.
+    with torch.no_grad():
+        for module in ppo.critic._net.modules():
+            if isinstance(module, torch.nn.Linear):
+                module.weight.fill_(0.05)
+                module.bias.fill_(0.05)
+    actor_before_critic = actor_encoder.linear.weight.detach().clone()
     if share_encoder:
         with torch.no_grad():
             value_input = actor_encoder(raw).reshape(1, -1)
@@ -138,13 +144,15 @@ def test_four_modes_actor_and_critic_gradient_isolation(fix_encoder, share_encod
     ppo.critic(value_input).sum().backward()
     assert actor_encoder.linear.weight.grad is None
     if not share_encoder:
-        # An independent Value Encoder must receive its own gradients,
-        # including when the *Actor* Encoder is frozen.
+        # Critic's full Value loss must reach and update its separate Encoder,
+        # even when the Actor's Encoder is frozen.
         encoder = ppo.critic._obs_encoder
-        # Direct encoder proxy avoids fragile assumptions about ReLU signs.
-        ppo.optimizer_critic.zero_grad()
-        encoder(raw).sum().backward()
+        critic_before = encoder.linear.weight.detach().clone()
         assert encoder.linear.weight.grad is not None
+    ppo.optimizer_critic.step()
+    assert torch.equal(actor_before_critic, actor_encoder.linear.weight)
+    if not share_encoder:
+        assert not torch.equal(critic_before, encoder.linear.weight)
 
 
 @pytest.mark.parametrize("fix_encoder,share_encoder", [
