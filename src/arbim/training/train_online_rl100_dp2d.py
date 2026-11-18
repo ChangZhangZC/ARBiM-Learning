@@ -223,7 +223,7 @@ def _linear_lr_total_steps(cfg: Mapping[str, Any], action_span: int) -> int:
 
     Whole episodes can overshoot the requested PPO batch. Use the largest
     full-episode buffer size implied by the configured episode cap so that
-    native linear LR cannot become negative before max_updates is reached.
+    native linear LR cannot become negative before the selected budget is reached.
     Early task termination can leave a positive final LR.
     """
     if type(action_span) is not int or action_span < 1:
@@ -489,6 +489,8 @@ def run(config: dict[str, Any], *, legacy_config: dict[str, Any] | None = None) 
             record = {
                 "event": "ppo", "updates": updates, "episodes": episodes, "env_steps": env_steps,
                 "decision_steps": decision_steps, "ppo_steps": ppo_steps,
+                "actor_optimizer_steps": ppo_steps * policy.num_inference_steps,
+                "critic_optimizer_steps": ppo_steps,
                 "requested_batch_size": cfg["ppo"]["batch_size"],
                 "actual_batch_size": current_batch_transitions,
                 **metrics, "actor_lr": actor_lr, "critic_lr": critic_lr,
@@ -507,7 +509,9 @@ def run(config: dict[str, Any], *, legacy_config: dict[str, Any] | None = None) 
                     "progress": {"ppo_updates": updates, "episodes": episodes,
                                  "env_steps": env_steps, "decision_steps": decision_steps,
                                  "actual_batch_size": current_batch_transitions,
-                                 "ppo_steps": ppo_steps},
+                                 "ppo_steps": ppo_steps,
+                                 "actor_optimizer_steps": ppo_steps * policy.num_inference_steps,
+                                 "critic_optimizer_steps": ppo_steps},
                     "system": {
                         "rollout_s": batch_rollout_elapsed,
                         "env_steps_per_s": batch_env_steps / max(batch_rollout_elapsed, 1e-9),
