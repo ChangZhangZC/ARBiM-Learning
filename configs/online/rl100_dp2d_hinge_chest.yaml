@@ -13,7 +13,7 @@ env:
   binary_gripper: true
   binarize_state_gripper: true
   gripper_threshold: 0.9
-  max_episode_steps: 992  # common training/evaluation episode cap; divisible by action chunk
+  max_episode_steps: 500  # common training/eval cap; partial final chunks use variable-span GAE
   camera_map:
     observation.images.head: head
     observation.images.left_wrist: left_wrist
@@ -28,7 +28,7 @@ policy:
   num_inference_steps: null
 
 ppo:
-  max_updates: 10000   # total PPO update cycles (NOT environment steps)
+  max_steps: 10000     # PPO mini-batch passes, NOT rollout cycles or env steps
   ratio_mode: chunk_joint # chunk_joint; per_action_step ONLY if n_action_steps=1
   batch_size: 1024        # RL-100 Chunk Online nominal transitions; collect whole episodes
   mini_batch_size: 128    # RL-100 Chunk Online
@@ -72,7 +72,7 @@ checkpoint:
   resume: null           # prefer --resume <run_dir> CLI
 logging:
   jsonl: true
-  progress_bar: true
+  progress_bar: true   # ARBiM outer progress only; native PPO tqdm remains enabled
   tensorboard:
     enabled: true        # local outputs/online/.../tensorboard/
   ratio_diagnostics:
