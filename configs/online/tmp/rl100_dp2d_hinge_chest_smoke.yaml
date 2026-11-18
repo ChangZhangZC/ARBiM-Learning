@@ -68,7 +68,7 @@ evaluation:
   video_fps: 30
 
 checkpoint:
-  every_updates: 1
+  every_steps: 6         # smoke-only: roughly one complete PPO update per checkpoint
   keep_last: 3           # policy-only update_*.ckpt; last.ckpt always retained
   save_on_finish: true
   resume: null           # prefer --resume <run_dir> CLI
