@@ -148,27 +148,22 @@ class OnlineTelemetry:
         self.sink.close()
 
 
-def enable_ratio_diagnostics(ppo: Any) -> None:
-    """Extend upstream's read-only ratio logger, leaving its PPO loss untouched."""
-    if not getattr(ppo, "_enable_ratio_logging", False):
-        return
-    original = ppo._record_ratio_stats
+class RatioDiagnosticsMixin:
+    """Opt-in native PPO subclass extension; never replaces upstream methods."""
 
-    def record(phase, denoise_step, ratio, old_logprob, new_logprob):
-        before = len(ppo._ratio_records)
-        original(phase, denoise_step, ratio, old_logprob, new_logprob)
-        if len(ppo._ratio_records) == before:
+    def _record_ratio_stats(self, phase, denoise_step, ratio, old_logprob, new_logprob):
+        before = len(self._ratio_records)
+        super()._record_ratio_stats(phase, denoise_step, ratio, old_logprob, new_logprob)
+        if len(self._ratio_records) == before:
             return
-        # These tensors are already computed by the pinned native PPO loop.
+        # The pinned RL-100 PPO already computed these tensors for its loss.
         with torch.no_grad():
             flat = ratio.detach().float().reshape(-1)
             delta = (new_logprob.detach().float() - old_logprob.detach().float()).reshape(-1)
-            row = ppo._ratio_records[-1]
+            row = self._ratio_records[-1]
             row["sample_size"] = int(flat.numel())
             row["approx_kl"] = float(((flat - 1.0) - delta).mean().item())
-            row["clip_fraction"] = float(((flat - 1.0).abs() > ppo.args.epsilon).float().mean().item())
-
-    ppo._record_ratio_stats = record
+            row["clip_fraction"] = float(((flat - 1.0).abs() > self.args.epsilon).float().mean().item())
 
 
 def native_ratio_summary(ppo: Any) -> dict[str, float]:
