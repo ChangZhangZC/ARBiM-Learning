@@ -88,6 +88,9 @@ def build_online_ppo(policy: Any, settings: Mapping[str, Any]):
         fix_encoder=fix_encoder, cfg=native_cfg,
     )
     bridge.transfer2online(critic=critic, dynamics=None, cfg=native_cfg)
+    # Pinned upstream initializes the Critic KL scheduler with Actor LR.
+    # Correct the adapter-owned initialization without editing RL-100.
+    bridge.kl_scheduler_critic.current_lr = ppo_args.lr_c
     # transfer2online() constructs native optimizers before these mode flags.
     # Explicitly restore gradients if the incoming IL model had frozen params.
     bridge._policy.obs_encoder.requires_grad_(not fix_encoder)
@@ -102,13 +105,45 @@ def build_online_ppo(policy: Any, settings: Mapping[str, Any]):
     return bridge
 
 
+def _variable_span_advantage(ppo: Any, buffer: Any) -> dict[str, torch.Tensor]:
+    """Use the native precomputed interface when transitions span fewer env steps.
+
+    A complete chunk has gamma**H; a partial chunk has gamma**executed_steps.
+    Keep upstream's per-decision GAE lambda and terminal/dw semantics.
+    """
+    s, _, _, rewards, next_s, dw, done = buffer.numpy_to_tensor()
+    with torch.no_grad():
+        vs, vs_next = ppo._compute_critic_values_in_chunks(
+            s, next_s, use_obs2latent=bool(ppo.args.share_encoder),
+        )
+        spans = torch.as_tensor(
+            buffer.executed_spans(), dtype=rewards.dtype, device=rewards.device,
+        ).view(-1, 1)
+        discount = torch.pow(torch.as_tensor(ppo.args.gamma, device=rewards.device), spans)
+        deltas = rewards + discount * (1.0 - dw) * vs_next - vs
+        adv = torch.zeros_like(deltas)
+        gae = torch.zeros_like(deltas[0])
+        for idx in reversed(range(buffer.count)):
+            gae = deltas[idx] + discount[idx] * ppo.args.lamda * gae * (1.0 - done[idx])
+            adv[idx] = gae
+        return {"adv": adv, "v_target": adv + vs, "vs": vs}
+
+
+def count_ppo_steps(batch_size: int, mini_batch_size: int, epochs: int) -> int:
+    """Native BatchSampler(drop_last=False) minibatches across all PPO epochs."""
+    return epochs * ((batch_size + mini_batch_size - 1) // mini_batch_size)
+
+
 def update_online_ppo(ppo: Any, buffer: Any, *, total_steps: int) -> dict[str, float]:
     if buffer.count < 1:
         raise ValueError("Online PPO update needs at least one transition.")
     # Native loop uses args.batch_size as an exact range. Collect complete
     # episodes to preserve GAE boundaries, then adapt its current batch length.
     ppo.args.batch_size = buffer.count
-    actor, critic, bc, distill = ppo.dp_align_update_no_share(buffer, total_steps)
+    precomputed = _variable_span_advantage(ppo, buffer) if buffer.has_partial_spans() else None
+    actor, critic, bc, distill = ppo.dp_align_update_no_share(
+        buffer, total_steps, precomputed=precomputed,
+    )
     metrics = dict(actor_loss=float(actor), critic_loss=float(critic),
                    bc_loss=float(bc), distill_loss=float(distill))
     if not all(torch.isfinite(torch.tensor(v)).item() for v in metrics.values()):
