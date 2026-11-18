@@ -32,6 +32,7 @@ def collect_online_episode(
         raise ValueError("DuoBench checkpoint/environment specs disagree.")
     device = next(policy.parameters()).device
     raw_obs, initial_info = adapter.reset(seed=seed)
+    evaluator.reset(initial_info)
     history = initial_history(raw_obs, spec, policy.n_obs_steps)
     total_steps, transitions = 0, 0
     return_raw, return_train = 0.0, 0.0
