@@ -32,7 +32,6 @@ from arbim.rl.online.ppo_bridge import build_online_ppo, update_online_ppo, coun
 from arbim.rl.online.rollout import collect_online_episode
 from arbim.rl.online.telemetry import (
     OnlineTelemetry, native_ratio_summary, append_native_ratio_records,
-    enable_ratio_diagnostics,
 )
 from arbim.rl.rewards.duobench_hinge_chest import build_reward_evaluator
 
@@ -302,7 +301,6 @@ def run(config: dict[str, Any], *, legacy_config: dict[str, Any] | None = None) 
     settings["enable_ratio_logging"] = bool(ratio_cfg.get("enabled", False))
     settings["ratio_log_every_updates"] = int(ratio_cfg.get("every_updates", 5))
     ppo = build_online_ppo(policy, settings)
-    enable_ratio_diagnostics(ppo)
     eval_policy = ppo._policy
     evaluator = build_reward_evaluator(cfg["reward"]["mode"])
     buffer = OnlinePPOBuffer(
