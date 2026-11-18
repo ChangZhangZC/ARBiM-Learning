@@ -63,8 +63,8 @@ def validate_config(cfg: Mapping[str, Any]) -> None:
         raise ValueError("ppo.gamma and ppo.gae_lambda must be <= 1.")
     if ppo.get("fix_encoder") is not True or ppo.get("share_encoder") is not True:
         raise ValueError("Task 6 V1 freezes and shares the native RGB encoder.")
-    if ppo.get("linear_lr_decay") is True:
-        raise ValueError("Task 6 V1 keeps native adaptive KL scheduler; linear decay needs separate testing.")
+    if type(ppo.get("linear_lr_decay")) is not bool:
+        raise ValueError("ppo.linear_lr_decay must be boolean.")
     if ppo["value_depth"] < 2:
         raise ValueError("ppo.value_depth must be >= 2.")
     if ppo.get("distill_phase", "off") != "off":
@@ -78,7 +78,7 @@ def validate_config(cfg: Mapping[str, Any]) -> None:
     if any(key in cfg["evaluation"] for key in ("max_env_steps",)):
         raise ValueError("Use env.max_episode_steps; evaluation.max_env_steps is no longer supported.")
     if "max_train_steps" in ppo:
-        raise ValueError("ppo.max_train_steps is hidden because linear_lr_decay is disabled.")
+        raise ValueError("The native LR schedule horizon is derived from the PPO update budget; do not set ppo.max_train_steps.")
     rollout = cfg["rollout"]
     if type(rollout.get("seed")) is not int or rollout["seed"] < 0:
         raise ValueError("rollout.seed must be a nonnegative integer.")
@@ -209,6 +209,27 @@ def _budget_reached(cfg: Mapping[str, Any], updates: int) -> bool:
     return updates >= int(cfg["ppo"]["max_updates"])
 
 
+def _linear_lr_total_steps(cfg: Mapping[str, Any], action_span: int) -> int:
+    """Native LR decay horizon in *action-chunk decisions*, not env steps.
+
+    Whole episodes can overshoot the requested PPO batch. Use the largest
+    full-episode buffer size implied by the configured episode cap so that
+    native linear LR cannot become negative before max_updates is reached.
+    Early task termination can leave a positive final LR.
+    """
+    if type(action_span) is not int or action_span < 1:
+        raise ValueError("Effective action span must be positive.")
+    episode_steps = int(cfg["env"]["max_episode_steps"])
+    if episode_steps % action_span:
+        raise ValueError("Episode steps must be divisible by action span.")
+    transitions_per_episode = episode_steps // action_span
+    transitions_per_update = (
+        math.ceil(int(cfg["ppo"]["batch_size"]) / transitions_per_episode)
+        * transitions_per_episode
+    )
+    return transitions_per_update * int(cfg["ppo"]["max_updates"])
+
+
 def _mean_eval_stage(folder: Path) -> float | None:
     stages = []
     for line in (folder / "episodes.jsonl").read_text(encoding="utf-8").splitlines():
@@ -262,6 +283,8 @@ def run(config: dict[str, Any], *, legacy_config: dict[str, Any] | None = None) 
     log_cfg = cfg.get("logging", {})
     ratio_cfg = log_cfg.get("ratio_diagnostics", {})
     settings = dict(cfg["ppo"])
+    if settings["linear_lr_decay"]:
+        settings["max_train_steps"] = _linear_lr_total_steps(cfg, span)
     settings["enable_ratio_logging"] = bool(ratio_cfg.get("enabled", False))
     settings["ratio_log_every_updates"] = int(ratio_cfg.get("every_updates", 5))
     ppo = build_online_ppo(policy, settings)
@@ -289,6 +312,7 @@ def run(config: dict[str, Any], *, legacy_config: dict[str, Any] | None = None) 
             legacy_config=legacy_frozen,
         )
         updates, episodes, env_steps = restore_online_checkpoint(ppo, payload)
+        decision_steps = int(payload.get("decision_steps", 0))
         if _budget_reached(cfg, updates):
             raise ValueError("Online run already reached its configured training budget.")
         previous_config = yaml.safe_load(
@@ -299,7 +323,7 @@ def run(config: dict[str, Any], *, legacy_config: dict[str, Any] | None = None) 
         run_dir = _new_run_dir(cfg)
         _save_config(run_dir / "config_resolved.yaml", frozen)
         _write_run_meta(run_dir, frozen, il_path)
-        updates, episodes, env_steps = 0, 0, 0
+        updates, episodes, env_steps, decision_steps = 0, 0, 0, 0
         pending_config = None
 
     if _budget_reached(cfg, updates):
@@ -323,7 +347,7 @@ def run(config: dict[str, Any], *, legacy_config: dict[str, Any] | None = None) 
     logger.message(
         f"[INIT] actor=RL1002D H={span} K={policy.num_inference_steps} "
         f"device={cfg['policy']['device']} update={updates}/{cfg['ppo']['max_updates']} "
-        f"env_steps={env_steps}"
+        f"env_steps={env_steps} decision_steps={decision_steps}"
     )
 
     stop_requested = False
@@ -376,7 +400,8 @@ def run(config: dict[str, Any], *, legacy_config: dict[str, Any] | None = None) 
                 elapsed = time.perf_counter() - start
                 record = {
                     "event": "rollout", "updates": updates, "episodes": episodes,
-                    "env_steps": env_steps, **result, "elapsed_s": elapsed,
+                    "env_steps": env_steps, "decision_steps": decision_steps + buffer.count,
+                    **result, "elapsed_s": elapsed,
                 }
                 logger.event(
                     "rollout", record,
@@ -395,7 +420,15 @@ def run(config: dict[str, Any], *, legacy_config: dict[str, Any] | None = None) 
             ppo._policy.train()
             ppo._policy.obs_encoder.eval()
             update_start = time.perf_counter()
-            metrics = update_online_ppo(ppo, buffer, total_steps=env_steps)
+            # RL-100 native lr_decay(total_steps) expects POLICY DECISIONS.
+            # One decision corresponds to one chunk transition, not 32 env steps.
+            current_batch_transitions = buffer.count
+            decision_steps += current_batch_transitions
+            lr_steps = (
+                min(decision_steps, ppo.args.max_train_steps)
+                if cfg["ppo"]["linear_lr_decay"] else decision_steps
+            )
+            metrics = update_online_ppo(ppo, buffer, total_steps=lr_steps)
             update_elapsed = time.perf_counter() - update_start
             ratio_metrics = native_ratio_summary(ppo) if settings["enable_ratio_logging"] else {}
             updates += 1
@@ -420,19 +453,25 @@ def run(config: dict[str, Any], *, legacy_config: dict[str, Any] | None = None) 
             }
             record = {
                 "event": "ppo", "updates": updates, "episodes": episodes, "env_steps": env_steps,
+                "decision_steps": decision_steps,
+                "requested_batch_size": cfg["ppo"]["batch_size"],
+                "actual_batch_size": current_batch_transitions,
                 **metrics, "actor_lr": actor_lr, "critic_lr": critic_lr,
                 "update_s": update_elapsed, **ratio_metrics,
             }
             logger.event(
                 "ppo", record,
-                summary=(f"[PPO] update={updates}/{total_budget} env_steps={env_steps} "
+                summary=(f"[PPO] update={updates}/{total_budget} transitions={current_batch_transitions} "
+                         f"decisions={decision_steps} env_steps={env_steps} "
                          f"actor={metrics['actor_loss']:.4f} critic={metrics['critic_loss']:.2f} "
                          f"lr={actor_lr:.2e}/{critic_lr:.2e}"),
                 groups={
                     "ppo": {"actor_loss": metrics["actor_loss"], "critic_loss": metrics["critic_loss"]},
                     "lr": {"actor": actor_lr, "critic": critic_lr},
                     "rollout": rollout_averages,
-                    "progress": {"ppo_updates": updates, "episodes": episodes, "env_steps": env_steps},
+                    "progress": {"ppo_updates": updates, "episodes": episodes,
+                                 "env_steps": env_steps, "decision_steps": decision_steps,
+                                 "actual_batch_size": current_batch_transitions},
                     "system": {
                         "rollout_s": batch_rollout_elapsed,
                         "env_steps_per_s": batch_env_steps / max(batch_rollout_elapsed, 1e-9),
@@ -454,6 +493,7 @@ def run(config: dict[str, Any], *, legacy_config: dict[str, Any] | None = None) 
                 save_online_checkpoint(
                     checkpoint_dir / "last.ckpt", ppo, config=frozen, updates=updates,
                     episode_count=episodes, env_steps=env_steps, original_checkpoint=il_path,
+                    decision_steps=decision_steps,
                 )
                 if pending_config is not None:
                     # Write the migrated YAML only after a valid new-format
