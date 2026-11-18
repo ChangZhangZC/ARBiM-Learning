@@ -58,8 +58,8 @@ rollout:
 
 evaluation:
   enabled: true
-  every_updates: 1
-  num_episodes: 2
+  every_updates: 25  # full PPO rollout/update cycles; ~10 evals at default budget
+  num_episodes: 30  # native RL-100 Online Chunk example uses 30 eval episodes
   seed: 100042          # constant across all evaluations for comparable curves
   record_video: false
   video_source: native    # native/policy
@@ -74,7 +74,7 @@ logging:
   jsonl: true
   progress_bar: true   # ARBiM outer progress only; native PPO tqdm remains enabled
   tensorboard:
-    enabled: true        # local outputs/online/.../tensorboard/
+    enabled: true        # fresh PPO-step runs use tensorboard_ppo_steps/
   ratio_diagnostics:
     enabled: true
     every_updates: 5    # upstream native PPO ratio sampling; debug overhead
