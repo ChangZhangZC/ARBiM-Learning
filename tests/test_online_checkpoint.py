@@ -266,3 +266,39 @@ def test_linear_lr_resume_rejects_inconsistent_decision_counter(tmp_path):
         read_online_checkpoint(
             path, config=config, original_checkpoint="/tmp/example/best.ckpt"
         )
+
+
+def test_minibatch_step_budget_resume_persists_counter(tmp_path):
+    config = profile()
+    config["ppo"].pop("max_updates")
+    config["ppo"].update(max_steps=10000, linear_lr_decay=True)
+    path = tmp_path / "last.ckpt"
+    save_online_checkpoint(
+        path, FakePPO(), config=config, updates=2, episode_count=3,
+        env_steps=500, decision_steps=80, ppo_steps=80,
+        original_checkpoint="/tmp/example/best.ckpt",
+    )
+    payload = read_online_checkpoint(
+        path, config=config, original_checkpoint="/tmp/example/best.ckpt",
+    )
+    assert payload["ppo_steps"] == 80
+    changed = copy.deepcopy(config)
+    changed["ppo"]["max_steps"] = 20000
+    with pytest.raises(ValueError, match="contract"):
+        read_online_checkpoint(
+            path, config=changed, original_checkpoint="/tmp/example/best.ckpt",
+        )
+
+
+def test_minibatch_resume_requires_counter(tmp_path):
+    config = profile()
+    config["ppo"].pop("max_updates")
+    config["ppo"]["max_steps"] = 10000
+    path = tmp_path / "last.ckpt"
+    save_online_checkpoint(
+        path, FakePPO(), config=config, updates=1, episode_count=2,
+        env_steps=500, decision_steps=40,
+        original_checkpoint="/tmp/example/best.ckpt",
+    )
+    with pytest.raises(ValueError, match="ppo_steps"):
+        read_online_checkpoint(path, config=config, original_checkpoint="/tmp/example/best.ckpt")
