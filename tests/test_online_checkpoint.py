@@ -85,7 +85,7 @@ def test_snapshot_matches_existing_inference_role(tmp_path):
     path = tmp_path / "step.ckpt"
     save_inference_snapshot(
         path, ppo, il_contract={"policy": {"horizon": 5}},
-        updates=3, env_steps=10, episodes=2,
+        updates=3, env_steps=10, episodes=2, ppo_steps=120,
     )
     data = torch.load(path, map_location="cpu", weights_only=True)
     assert data["format_version"] == 2
@@ -95,6 +95,7 @@ def test_snapshot_matches_existing_inference_role(tmp_path):
     assert data["contract"]["policy"]["num_inference_steps"] == 10
     assert data["global_step"] == data["ppo_updates"] == 3
     assert data["env_steps"] == 10
+    assert data["ppo_steps"] == 120
     assert data["episodes"] == 2
 
 
