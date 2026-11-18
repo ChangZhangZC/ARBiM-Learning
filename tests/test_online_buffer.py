@@ -70,3 +70,18 @@ def test_buffer_rejects_unsafe_shapes_and_termination(spec):
         storage.store(frame, np.zeros((4, 4, 16)), np.zeros((3, 4, 16)),
                       0, frame, False, True)
     assert storage.count == 0
+
+
+def test_executed_spans_are_separate_from_native_ddim_tensor_shapes(spec):
+    storage = OnlinePPOBuffer(spec=spec, n_obs_steps=2, prediction_steps=4,
+                              num_inference_steps=3, action_dim=16, device="cpu", action_span=4)
+    frame = obs()
+    trajectory = np.zeros((4, 4, 16), dtype=np.float32)
+    logprob = np.zeros((3, 4, 16), dtype=np.float32)
+    storage.store(frame, trajectory, logprob, 1.0, frame, False, False, executed_steps=4)
+    storage.store(frame, trajectory, logprob, 2.0, frame, True, False, executed_steps=1)
+    assert storage.has_partial_spans()
+    assert storage.executed_spans() == [4, 1]
+    assert storage.numpy_to_tensor()[1].shape == (2, 4, 4, 16)
+    with pytest.raises(ValueError, match="executed_steps"):
+        storage.store(frame, trajectory, logprob, 0.0, frame, True, False, executed_steps=5)
