@@ -8,6 +8,8 @@ from __future__ import annotations
 import csv
 import json
 import math
+
+import torch
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -146,12 +148,36 @@ class OnlineTelemetry:
         self.sink.close()
 
 
+def enable_ratio_diagnostics(ppo: Any) -> None:
+    """Extend upstream's read-only ratio logger, leaving its PPO loss untouched."""
+    if not getattr(ppo, "_enable_ratio_logging", False):
+        return
+    original = ppo._record_ratio_stats
+
+    def record(phase, denoise_step, ratio, old_logprob, new_logprob):
+        before = len(ppo._ratio_records)
+        original(phase, denoise_step, ratio, old_logprob, new_logprob)
+        if len(ppo._ratio_records) == before:
+            return
+        # These tensors are already computed by the pinned native PPO loop.
+        with torch.no_grad():
+            flat = ratio.detach().float().reshape(-1)
+            delta = (new_logprob.detach().float() - old_logprob.detach().float()).reshape(-1)
+            row = ppo._ratio_records[-1]
+            row["sample_size"] = int(flat.numel())
+            row["approx_kl"] = float(((flat - 1.0) - delta).mean().item())
+            row["clip_fraction"] = float(((flat - 1.0).abs() > ppo.args.epsilon).float().mean().item())
+
+    ppo._record_ratio_stats = record
+
+
 def native_ratio_summary(ppo: Any) -> dict[str, float]:
     """Read already-collected upstream diagnostics; never recompute PPO ratios."""
     records = getattr(ppo, "_ratio_records", ())
     if not records:
         return {}
-    keys = ("ratio_mean", "ratio_q05", "ratio_q50", "ratio_q95", "delta_mean")
+    keys = ("ratio_mean", "ratio_q05", "ratio_q50", "ratio_q95", "delta_mean",
+            "approx_kl", "clip_fraction")
     return {
         key: sum(float(row[key]) for row in records if key in row)
         / sum(key in row for row in records)
