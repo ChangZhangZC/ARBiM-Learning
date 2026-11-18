@@ -41,7 +41,10 @@ def online_resume_contract(config: Mapping[str, Any]) -> dict[str, Any]:
     policy = copy.deepcopy(config["policy"])
     policy.pop("device", None)  # runtime device is not an algorithm change
     ppo = copy.deepcopy(config["ppo"])
-    ppo.pop("max_updates", None)  # training budget can increase on Resume
+    # Native linear LR schedule's horizon is derived from max_updates.
+    # Extending this budget changes the LR trajectory and is not a strict Resume.
+    if not ppo.get("linear_lr_decay", False):
+        ppo.pop("max_updates", None)
     return {
         "env": copy.deepcopy(config["env"]),  # includes common episode limit
         "policy": policy,
@@ -99,7 +102,7 @@ def _migrated_legacy_contract_digest(config: Mapping[str, Any]) -> str:
 def save_online_checkpoint(
     path: str | Path, ppo: Any, *, config: Mapping[str, Any],
     updates: int, episode_count: int, env_steps: int,
-    original_checkpoint: str,
+    original_checkpoint: str, decision_steps: int | None = None,
 ) -> None:
     """Call only AFTER a successful PPO update, with an emptied on-policy buffer."""
     _atomic_save(path, {
@@ -109,6 +112,7 @@ def save_online_checkpoint(
         "contract_digest": _contract_digest(config),
         "updates": int(updates), "episodes": int(episode_count),
         "env_steps": int(env_steps),
+        **({"decision_steps": int(decision_steps)} if decision_steps is not None else {}),
         "policy": ppo._policy.state_dict(),
         "critic": ppo.critic.state_dict(),
         "optimizer_actor": ppo.optimizer_actor.state_dict(),
@@ -146,6 +150,12 @@ def read_online_checkpoint(
     for key in ("updates", "episodes", "env_steps"):
         if type(payload.get(key)) is not int or payload[key] < 0:
             raise ValueError(f"Invalid Online checkpoint counter: {key}.")
+    if "decision_steps" in payload and (
+        type(payload["decision_steps"]) is not int or payload["decision_steps"] < 0
+    ):
+        raise ValueError("Invalid Online checkpoint counter: decision_steps.")
+    if config["ppo"].get("linear_lr_decay", False) and "decision_steps" not in payload:
+        raise ValueError("Linear-LR Online Resume requires a saved decision_steps counter.")
     return payload
 
 
