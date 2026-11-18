@@ -65,7 +65,7 @@ def patch_policy(monkeypatch):
     def fake_prepare(batch, spec, n_obs_steps, *, device):
         return {"agent_pos": torch.zeros((1, n_obs_steps, 16))}
 
-    def fake_sample(policy, observation):
+    def fake_sample(policy, observation, *, fix_encoder=True):
         h = policy.n_action_steps
         return OnlineSample(
             action=torch.zeros((1, h, 16)),
