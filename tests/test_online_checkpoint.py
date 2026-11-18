@@ -252,3 +252,17 @@ def test_adaptive_lr_mode_still_allows_budget_extension(tmp_path):
     assert read_online_checkpoint(
         path, config=extended, original_checkpoint="/tmp/example/best.ckpt"
     )["updates"] == 1
+
+
+def test_linear_lr_resume_rejects_inconsistent_decision_counter(tmp_path):
+    config = profile()
+    config["ppo"]["linear_lr_decay"] = True
+    path = tmp_path / "last.ckpt"
+    save_online_checkpoint(
+        path, FakePPO(), config=config, updates=3, episode_count=6,
+        env_steps=100, decision_steps=2, original_checkpoint="/tmp/example/best.ckpt"
+    )
+    with pytest.raises(ValueError, match="inconsistent decision_steps"):
+        read_online_checkpoint(
+            path, config=config, original_checkpoint="/tmp/example/best.ckpt"
+        )
