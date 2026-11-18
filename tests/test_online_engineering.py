@@ -14,6 +14,7 @@ from arbim.rl.online.telemetry import (
 from arbim.training.train_online_rl100_dp2d import (
     _budget_reached, _new_run_dir, _frozen_config, _file_sha256,
     normalize_online_config, validate_config, _linear_lr_total_steps,
+    _checkpoint_interval_due,
 )
 
 
@@ -326,8 +327,11 @@ def test_temp_smoke_yaml_is_separate_from_experiment_defaults():
     assert base["ppo"]["max_steps"] == 10000
     assert base["evaluation"]["num_episodes"] == 30
     assert base["evaluation"]["every_updates"] == 25
+    assert base["checkpoint"]["every_steps"] == 1000
+    assert base["checkpoint"]["keep_last"] == 6
     assert smoke["ppo"]["max_steps"] == 12
     assert smoke["evaluation"]["num_episodes"] == 2
+    assert smoke["checkpoint"]["every_steps"] == 6
     assert smoke["output"]["root"].startswith("/tmp/")
     smoke["policy"]["checkpoint_path"] = "/tmp/verified/last.ckpt"
     validate_config(smoke)
@@ -337,6 +341,54 @@ def test_temp_smoke_yaml_is_separate_from_experiment_defaults():
     expected["env"]["max_episode_steps"] = 65
     expected["ppo"].update(max_steps=12, batch_size=16, mini_batch_size=8, K_epochs=2)
     expected["evaluation"].update(every_updates=1, num_episodes=2)
+    expected["checkpoint"].update(every_steps=6, keep_last=3)
+    expected["reward"]["mode"] = "env_raw"  # smoke deliberately avoids research reward
     expected["logging"]["ratio_diagnostics"]["every_updates"] = 1
     expected["output"].update(root="/tmp/arbim_online_smoke", run_name="smoke_{timestep}")
     assert smoke == expected
+
+
+def test_checkpoint_every_steps_crosses_threshold_on_complete_ppo_update():
+    checkpoint = {"every_steps": 1000}
+    assert not _checkpoint_interval_due(
+        checkpoint, updates=24, previous_ppo_steps=920, ppo_steps=960
+    )
+    assert _checkpoint_interval_due(
+        checkpoint, updates=25, previous_ppo_steps=960, ppo_steps=1003
+    )
+    assert not _checkpoint_interval_due(
+        checkpoint, updates=26, previous_ppo_steps=1003, ppo_steps=1043
+    )
+    # Small intervals may be crossed several times in one native PPO cycle,
+    # but only one consistent post-update checkpoint is written.
+    assert _checkpoint_interval_due(
+        {"every_steps": 6}, updates=1, previous_ppo_steps=0, ppo_steps=20
+    )
+
+
+def test_checkpoint_old_update_frequency_retains_legacy_semantics():
+    checkpoint = {"every_updates": 25}
+    assert not _checkpoint_interval_due(
+        checkpoint, updates=24, previous_ppo_steps=960, ppo_steps=1000
+    )
+    assert _checkpoint_interval_due(
+        checkpoint, updates=25, previous_ppo_steps=1000, ppo_steps=1040
+    )
+
+
+def test_checkpoint_frequency_rejects_missing_ambiguous_or_invalid_fields():
+    cfg = profile()
+    del cfg["checkpoint"]["every_steps"]
+    with pytest.raises(ValueError, match="exactly one"):
+        validate_config(cfg)
+    cfg["checkpoint"]["every_steps"] = 1000
+    cfg["checkpoint"]["every_updates"] = 1
+    with pytest.raises(ValueError, match="exactly one"):
+        validate_config(cfg)
+    del cfg["checkpoint"]["every_updates"]
+    cfg["checkpoint"]["every_steps"] = 0
+    with pytest.raises(ValueError, match="checkpoint.every_steps"):
+        validate_config(cfg)
+    del cfg["checkpoint"]["every_steps"]
+    cfg["checkpoint"]["every_updates"] = 25
+    validate_config(cfg)  # Old saved run configurations remain readable.
