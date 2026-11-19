@@ -25,8 +25,10 @@ def build_rl100_dp(shape_meta: Mapping[str, Any], config: Mapping[str, Any]):
     rgb_cfg = dict(vision_cfg.pop("rgb_model"))
     if policy_cfg.get("model") != "dp3" or policy_cfg.get("scheduler_type") != "ddim":
         raise ValueError("Task 3 V1 requires native model='dp3' and scheduler_type='ddim'.")
-    if policy_cfg.get("use_recon") or vision_cfg.get("use_recon") or vision_cfg.get("use_vib"):
-        raise ValueError("Task 3 V1 disables reconstruction and VIB objectives.")
+    # Keep the native RL1002D auxiliary-loss switch consistent with its Encoder.
+    # VIB alone is supported; reconstruction requires both switches to be enabled.
+    if bool(policy_cfg.get("use_recon", False)) != bool(vision_cfg.get("use_recon", False)):
+        raise ValueError("policy.use_recon and vision.use_recon must match.")
 
     rgb_model = get_resnet(**rgb_cfg)
     encoder = MultiImageObsEncoder(shape_meta=shape_meta, rgb_model=rgb_model, **vision_cfg)
