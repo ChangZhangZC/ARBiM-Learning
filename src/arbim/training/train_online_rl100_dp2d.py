@@ -28,7 +28,9 @@ from arbim.rl.online.checkpoint import (
     save_inference_snapshot, save_online_checkpoint, prune_policy_snapshots,
 )
 from arbim.rl.online.policy_adapter import validate_online_policy
-from arbim.rl.online.ppo_bridge import build_online_ppo, update_online_ppo, count_ppo_steps
+from arbim.rl.online.ppo_bridge import (
+    build_online_ppo, update_online_ppo, count_ppo_steps, deterministic_vib_evaluation,
+)
 from arbim.rl.online.rollout import collect_online_episode
 from arbim.rl.online.telemetry import (
     OnlineTelemetry, native_ratio_summary, append_native_ratio_records,
@@ -79,9 +81,14 @@ def validate_config(cfg: Mapping[str, Any]) -> None:
         raise ValueError("Task 6 V1 excludes distillation.")
     if ppo.get("use_bc"):
         raise ValueError("Online BC is not supported.")
-    for flag in ("recon", "value_recon", "per_step_recon"):
+    for flag in ("recon", "value_recon", "per_step_recon", "force_stochastic_online"):
         if type(ppo.get(flag, False)) is not bool:
             raise ValueError(f"ppo.{flag} must be boolean.")
+    for key in ("kl_beta", "recon_loss_weight"):
+        value = ppo.get(key)
+        if value is not None and (isinstance(value, bool) or not isinstance(value, (int, float))
+                                  or not np.isfinite(value) or value <= 0):
+            raise ValueError(f"ppo.{key} must be a positive finite number.")
     if ppo.get("recon", False) and ppo["fix_encoder"]:
         raise ValueError("ppo.recon requires ppo.fix_encoder=false.")
     if ppo.get("value_recon", False) and ppo["share_encoder"]:
@@ -313,6 +320,9 @@ def run(config: dict[str, Any], *, legacy_config: dict[str, Any] | None = None) 
         n_action_steps=cfg["policy"].get("n_action_steps"),
         num_inference_steps=cfg["policy"].get("num_inference_steps"),
     )
+    # Native Online Shell disables IL-only RandomShiftsAug even if BC trained
+    # with policy.use_aug=True. Keep the saved IL checkpoint contract untouched.
+    policy.use_aug = False
     validate_online_policy(policy, cfg["ppo"]["ratio_mode"])
     span = policy.n_action_steps
     # Partial final chunks are handled by variable-span GAE in the bridge.
@@ -395,7 +405,11 @@ def run(config: dict[str, Any], *, legacy_config: dict[str, Any] | None = None) 
         f"use_vib={bool(getattr(policy.obs_encoder, 'use_vib', False))} "
         f"ppo.recon={bool(cfg['ppo'].get('recon', False))} "
         f"ppo.value_recon={bool(cfg['ppo'].get('value_recon', False))} "
-        f"ppo.per_step_recon={bool(cfg['ppo'].get('per_step_recon', False))}"
+        f"ppo.per_step_recon={bool(cfg['ppo'].get('per_step_recon', False))} "
+        f"force_stochastic_online={bool(getattr(ppo._policy.obs_encoder, 'force_stochastic', False))} "
+        f"kl_beta={getattr(ppo._policy.obs_encoder, 'beta_kl', None)} "
+        f"recon_loss_weight={getattr(ppo._policy.obs_encoder, 'recon_loss_weight', None)} "
+        f"online_use_aug={ppo._policy.use_aug}"
     )
     logger.message("[LOG] train.log contains ARBiM summaries; native PPO tqdm/stdout is console-only.")
     logger.message(
@@ -621,8 +635,9 @@ def run(config: dict[str, Any], *, legacy_config: dict[str, Any] | None = None) 
                 start = time.perf_counter()
                 try:
                     seed_inference(eval_seed)
-                    summary = evaluate_episodes(
-                        adapter, eval_policy, spec,
+                    with deterministic_vib_evaluation(eval_policy):
+                        summary = evaluate_episodes(
+                            adapter, eval_policy, spec,
                         num_episodes=evaluation_cfg["num_episodes"], output_dir=folder,
                         camera_map=cfg["env"]["camera_map"], execute_steps=span,
                         max_env_steps=cfg["env"]["max_episode_steps"], post_success_steps=0,
@@ -630,8 +645,8 @@ def run(config: dict[str, Any], *, legacy_config: dict[str, Any] | None = None) 
                         record_video=evaluation_cfg["record_video"],
                         video_fps=evaluation_cfg["video_fps"],
                         video_source=evaluation_cfg["video_source"],
-                        verbose=False,
-                    )
+                            verbose=False,
+                        )
                 finally:
                     _restore_rng(rng)
                 eval_elapsed = time.perf_counter() - start
