@@ -223,3 +223,45 @@ def test_native_adaptive_kl_critic_uses_critic_learning_rate():
     assert ppo.kl_scheduler_actor.current_lr == pytest.approx(cfg["ppo"]["actor_lr"])
     assert ppo.kl_scheduler_critic.current_lr == pytest.approx(cfg["ppo"]["critic_lr"])
     assert ppo.optimizer_critic.param_groups[0]["lr"] == pytest.approx(cfg["ppo"]["critic_lr"])
+
+
+@pytest.mark.parametrize("recon,value_recon,per_step_recon", [
+    (True, False, False),
+    (True, True, True),
+    (False, True, False),
+])
+def test_native_ppo_receives_reconvib_flags(recon, value_recon, per_step_recon):
+    """Bridge uses native PPO aux objectives, without a second loss implementation."""
+    cfg = config()
+    cfg["ppo"].update(recon=recon, value_recon=value_recon,
+                      per_step_recon=per_step_recon)
+    # TinyEncoder stands in for a checkpoint that has VIB and recon heads.
+    original = TinyEncoder
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(TinyEncoder, "use_vib", True, raising=False)
+        ppo = create_bridge(cfg)
+    assert ppo.args.recon is recon
+    assert ppo.args.value_recon is value_recon
+    assert ppo.args.per_step_recon is per_step_recon
+
+
+def test_online_recon_requires_native_auxiliary_checkpoint():
+    cfg = config()
+    cfg["ppo"]["recon"] = True
+    with pytest.raises(ValueError, match="matching IL checkpoint"):
+        create_bridge(cfg)
+
+
+def test_native_reconvib_checkpoint_contract_disallows_change(tmp_path):
+    cfg = config()
+    cfg["ppo"]["recon"] = False
+    path = tmp_path / "last.ckpt"
+    save_online_checkpoint(
+        path, create_bridge(cfg), config=cfg, updates=1,
+        episode_count=2, env_steps=32, decision_steps=8, ppo_steps=40,
+        original_checkpoint="/tmp/test/il.ckpt",
+    )
+    edited = deepcopy(cfg)
+    edited["ppo"]["recon"] = True
+    with pytest.raises(ValueError, match="contract"):
+        read_online_checkpoint(path, config=edited, original_checkpoint="/tmp/test/il.ckpt")
