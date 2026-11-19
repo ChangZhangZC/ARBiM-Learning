@@ -61,9 +61,9 @@ baselines. `use_vib=true` changes the policy feature mapping; a previously
 validated no-VIB checkpoint cannot be made equivalent merely by loading
 part of its weights into a freshly constructed VIB model.
 
-Point `policy.checkpoint_path` at the validated *new* IL checkpoint, then
-enable Online auxiliary terms in
-`configs/online/rl100_dp2d_hinge_chest.yaml`:
+Point `policy.checkpoint_path` at the validated *new* IL checkpoint.
+The native Diffusion DP-2D **Chunk Online** shell enables auxiliary updates and
+overrides the regularization coefficients independently of its IL checkpoint:
 
 ```yaml
 ppo:
@@ -72,37 +72,56 @@ ppo:
   recon: true
   value_recon: true
   per_step_recon: true
+  force_stochastic_online: true
+  kl_beta: 0.005
+  recon_loss_weight: 0.1
 ```
 
-**Online PPO** defaults remain `false` to preserve existing Online runs;
-new IL runs use the updated, enabled Recon/VIB defaults. Native
-`ppo.recon` adds the encoder's combined Recon/VIB loss to the Actor PPO
-loss; `ppo.value_recon` adds the Critic encoder's combined loss to Value
-training; `ppo.per_step_recon` applies the Actor auxiliary loss at every
-DDIM denoising step rather than just the first, matching upstream. The
-native Critic is a deepcopy of the IL encoder when `share_encoder=false`.
+ARBiM's current Online and test-only smoke YAMLs now use this native Chunk
+profile by default, unlike the previous no-aux PPO profile. Both require a
+**new** native Recon/VIB IL checkpoint. For an old no-aux IL checkpoint,
+explicitly turn off `ppo.recon`, `ppo.value_recon`, and
+`ppo.per_step_recon`; do not silently partially load its parameters.
 
-Important invariants enforced by ARBiM:
-- `policy.use_recon` and `vision.use_recon` agree.
-- `ppo.recon=true` requires `fix_encoder=false`.
-- `ppo.value_recon=true` requires `share_encoder=false`.
-- `ppo.per_step_recon=true` requires `ppo.recon=true`.
-- Online auxiliary objectives require a checkpoint with matching native
-  VIB/Recon encoder modules. There is no automatic partial checkpoint load.
+The upstream IL Chunk Shell also has `policy.use_aug=True` and
+`optimizer.lr=2e-4`. These IL defaults are aligned. Its Online Shell uses
+`policy.use_aug=False`; ARBiM disables this training-only augmentation in
+memory after strict IL loading, without rewriting the original checkpoint.
+It does **not** carry random image shifts into PPO log-prob recomputation.
 
-The upstream chunk Online shell separately enables `ppo.recon=true`,
-`ppo.value_recon=true`, `ppo.per_step_recon=true`, and overrides the Encoder
-weights to `kl_beta=0.005` and `recon_loss_weight=0.1`. ARBiM intentionally
-does **not** auto-activate Online auxiliary losses or mutate a strict IL
-checkpoint's saved Encoder contract. Online parity for VIB sampling is also
-not yet claimed: RL-100's Online runner sets `force_stochastic_online=true`
-while ARBiM leaves the Online Encoder in `eval()` without force-stochastic
-sampling. Do not interpret the IL YAML update as full Online parity.
+The pinned native `MultiImageObsEncoder` uses `self.training or
+self.force_stochastic` to sample VIB latents. Like upstream
+`train_ddp.py::_online_ft_impl()`, ARBiM's Online Actor Encoder remains
+in `eval()` but sets `force_stochastic=True` for PPO rollout and updates.
+Independent Critic VIB is kept deterministic. During Online evaluation the
+Actor VIB flag is temporarily disabled and restored afterward (including
+errors), so deterministic DDIM evaluation uses the mean latent rather than
+sampling additional VIB noise. These runtime booleans are intentionally not
+part of model `state_dict()`, so are reconstructed from the saved Online
+config when strictly resuming a run.
 
-The original native `ppo.encoder_lr_scale` remains fixed at `1.0` in the
-ARBiM adapter; varying it also changes native optimizer ownership and
-requires separate checkpoint/resume integration. This change does not
-implicitly enable encoder-specific learning rates.
+Native `ppo.recon` adds combined Recon+VIB loss to the Actor PPO objective;
+`ppo.value_recon` adds the Critic's combined auxiliary loss; and
+`ppo.per_step_recon` repeats the Actor auxiliary loss at every denoising
+step. The independent Critic Encoder is copied from the IL Encoder, but the
+ValueMLP head is not initialized from upstream Offline IQL.
+
+The native Online Shell sets `encoders.resnet.kl_beta=0.005` and
+`encoders.resnet.recon_loss_weight=0.1` (versus IL's 5e-4 and 0.05).
+ARBiM stores the Online-only overrides under `ppo` so its strict Online
+checkpoint contract includes them. The adapter applies them to the native
+Actor and separate Critic Encoder **after** strict IL weight loading; these
+attributes scale native losses but do not change model parameter shapes.
+
+**Scope:** this is **Recon/VIB IL→Online behavior parity**, not a
+reimplementation of RL-100's full Offline IQL/Dynamics/Distillation stages,
+vectorized simulator, original datasets or identical training budgets.
+Those stages remain outside ARBiM's current research scope; success
+statistics cannot be interpreted as a reproduction of all RL-100 results.
+
+The native `ppo.encoder_lr_scale` stays at `1.0` here. Changing it also
+changes optimizer ownership and would require a separate, explicitly
+validated checkpoint/resume adaptation.
 
 **Reproducibility:** `config_resolved.yaml` stores the Online flags,
 and `run_meta.json` records the source IL checkpoint SHA256. Switching

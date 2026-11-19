@@ -80,7 +80,13 @@ def test_default_config_is_strict(tmp_path):
     cfg = yaml.safe_load((Path(__file__).resolve().parents[1] /
         "configs/online/rl100_dp2d_hinge_chest.yaml").read_text())
     cfg["policy"]["checkpoint_path"] = "/verified/hinge_chest/best.ckpt"
+    assert cfg["ppo"]["recon"] and cfg["ppo"]["value_recon"]
+    assert cfg["ppo"]["per_step_recon"] and cfg["ppo"]["force_stochastic_online"]
+    assert cfg["ppo"]["kl_beta"] == pytest.approx(0.005)
+    assert cfg["ppo"]["recon_loss_weight"] == pytest.approx(0.1)
     validate_config(cfg)
+    # Original four Encoder combinations remain legal with auxiliary losses off.
+    cfg["ppo"].update(recon=False, value_recon=False, per_step_recon=False)
     for fix in (False, True):
         for share in (False, True):
             cfg["ppo"]["fix_encoder"] = fix
@@ -125,4 +131,21 @@ def test_online_reconvib_rejects_unusable_combinations(settings, expected_error)
     cfg["policy"]["checkpoint_path"] = "/verified/hinge_chest/best.ckpt"
     cfg["ppo"].update(settings)
     with pytest.raises(ValueError, match=expected_error):
+        validate_config(cfg)
+
+
+@pytest.mark.parametrize("key,invalid", [
+    ("force_stochastic_online", "true"),
+    ("kl_beta", -0.005),
+    ("kl_beta", float("inf")),
+    ("recon_loss_weight", 0.0),
+])
+def test_native_online_regularization_settings_validate(key, invalid):
+    import yaml
+    from pathlib import Path
+    cfg = yaml.safe_load((Path(__file__).resolve().parents[1] /
+        "configs/online/rl100_dp2d_hinge_chest.yaml").read_text())
+    cfg["policy"]["checkpoint_path"] = "/verified/hinge_chest/best.ckpt"
+    cfg["ppo"][key] = invalid
+    with pytest.raises(ValueError, match="ppo." + key):
         validate_config(cfg)
