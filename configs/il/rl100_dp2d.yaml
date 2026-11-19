@@ -19,8 +19,12 @@ vision:
   share_rgb_model: false # false = independent RGB backbones, true = shared
   imagenet_norm: true
   use_agent_pos: true
-  use_vib: false
-  use_recon: false
+  use_vib: false # native VIB latent heads; enable before IL training
+  use_recon: false # native image decoder; also set policy.use_recon=true
+  recon_loss_weight: 0.05 # native MultiImageObsEncoder default
+  kl_loss_weight: 1.0 # native default
+  kl_beta: 0.00025 # native default (VIB KL coefficient)
+  latent_dim: null # keep native visual feature dimension when unset
 
 policy:
   model: dp3
@@ -44,7 +48,7 @@ policy:
   encoder_type: resnet
   w_pc: false
   use_aug: false # true = native RandomShiftsAug during training only
-  use_recon: false
+  use_recon: false # must equal vision.use_recon
   action_norm: true
   use_agent_pos: true
 
