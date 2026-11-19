@@ -16,13 +16,19 @@ import yaml
 from arbim.rl.online.checkpoint import (
     read_online_checkpoint, restore_online_checkpoint, save_online_checkpoint,
 )
-from arbim.rl.online.ppo_bridge import build_online_ppo
+from arbim.rl.online.ppo_bridge import build_online_ppo, deterministic_vib_evaluation
 
 
 class TinyEncoder(torch.nn.Module):
     def __init__(self):
         super().__init__()
         self.linear = torch.nn.Linear(3, 4)
+        self.use_vib = False
+        self.use_recon = False
+        self.force_stochastic = False
+        self.beta_kl = 2.5e-4
+        self.kl_beta = 2.5e-4
+        self.recon_loss_weight = 0.05
         with torch.no_grad():
             self.linear.weight.fill_(0.2)
             self.linear.bias.fill_(0.1)
@@ -52,6 +58,10 @@ def config():
     root = Path(__file__).resolve().parents[1]
     cfg = yaml.safe_load((root / "configs/online/rl100_dp2d_hinge_chest.yaml").read_text())
     cfg["policy"]["checkpoint_path"] = "/tmp/test/il.ckpt"
+    # Existing four-mode tests check original no-aux behavior separately from
+    # the new native Chunk Online Recon/VIB profile.
+    cfg["ppo"].update(recon=False, value_recon=False, per_step_recon=False,
+                      force_stochastic_online=False)
     return cfg
 
 
@@ -236,7 +246,6 @@ def test_native_ppo_receives_reconvib_flags(recon, value_recon, per_step_recon):
     cfg["ppo"].update(recon=recon, value_recon=value_recon,
                       per_step_recon=per_step_recon)
     # TinyEncoder stands in for a checkpoint that has VIB and recon heads.
-    original = TinyEncoder
     with pytest.MonkeyPatch.context() as patch:
         patch.setattr(TinyEncoder, "use_vib", True, raising=False)
         ppo = create_bridge(cfg)
@@ -265,3 +274,51 @@ def test_native_reconvib_checkpoint_contract_disallows_change(tmp_path):
     edited["ppo"]["recon"] = True
     with pytest.raises(ValueError, match="contract"):
         read_online_checkpoint(path, config=edited, original_checkpoint="/tmp/test/il.ckpt")
+
+
+def test_native_chunk_online_vib_state_and_regularization_weights():
+    cfg = config()
+    cfg["ppo"].update(recon=True, value_recon=True, per_step_recon=True,
+                      force_stochastic_online=True, kl_beta=0.005,
+                      recon_loss_weight=0.1)
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(TinyEncoder, "use_vib", True, raising=False)
+        patch.setattr(TinyEncoder, "use_recon", True, raising=False)
+        ppo = create_bridge(cfg)
+    actor = ppo._policy.obs_encoder
+    value = ppo.critic._obs_encoder
+    assert actor.training is False
+    assert actor.force_stochastic is True
+    assert actor.beta_kl == pytest.approx(0.005)
+    assert actor.kl_beta == pytest.approx(0.005)
+    assert actor.recon_loss_weight == pytest.approx(0.1)
+    assert value.training is False
+    assert value.force_stochastic is False
+    assert value.beta_kl == pytest.approx(0.005)
+    assert value.recon_loss_weight == pytest.approx(0.1)
+    with deterministic_vib_evaluation(ppo._policy):
+        assert actor.force_stochastic is False
+    assert actor.force_stochastic is True
+    with pytest.raises(RuntimeError, match="interrupt"):
+        with deterministic_vib_evaluation(ppo._policy):
+            assert actor.force_stochastic is False
+            raise RuntimeError("interrupt")
+    assert actor.force_stochastic is True
+
+
+def test_native_chunk_online_ppo_auxiliary_resume_contract(tmp_path):
+    cfg = config()
+    path = tmp_path / "last.ckpt"
+    save_online_checkpoint(
+        path, create_bridge(cfg), config=cfg, updates=1,
+        episode_count=2, env_steps=32, decision_steps=8, ppo_steps=40,
+        original_checkpoint="/tmp/test/il.ckpt",
+    )
+    for name, value in (("force_stochastic_online", True),
+                        ("kl_beta", 0.001), ("recon_loss_weight", 0.2)):
+        changed = deepcopy(cfg)
+        changed["ppo"][name] = value
+        with pytest.raises(ValueError, match="contract"):
+            read_online_checkpoint(
+                path, config=changed, original_checkpoint="/tmp/test/il.ckpt"
+            )
