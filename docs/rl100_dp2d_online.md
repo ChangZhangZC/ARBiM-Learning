@@ -8,11 +8,92 @@ collect on-policy DuoBench trajectories, and optimize with the pinned native
 
 Task 7 adds run management, local TensorBoard, compact console summaries,
 an explicit PPO mini-batch-step training budget and strict resumable checkpoints. It does
-**not** add offline IQL, dynamics, distillation, BC/reconstruction loss, DDP,
+**not** add offline IQL, dynamics, distillation, BC loss, DDP,
 asymmetric updates, or persistent online trajectory datasets. The native PPO
 mathematics and diffusion sampler are not modified.
 
 Only `hinge_chest` is supported by the current task adapter/reward evaluator.
+
+
+## Native Recon/VIB (opt-in)
+
+This integration reuses the **pinned native RL-100** implementation of
+`MultiImageObsEncoder.Recon_VIB_loss()`, `RL1002D.obs2latent_recon()`,
+`RL1002D.compute_loss()`, and the native online `dp_align_update_no_share()`.
+No reconstruction head, VIB reparameterization, reconstruction objective,
+PPO ratio, or diffusion sampling logic is reimplemented in ARBiM.
+
+### The checkpoint contract is part of the architecture
+
+An existing IL checkpoint trained with `vision.use_vib=false` and
+`vision.use_recon=false` does not contain the native VIB mu/logvar heads or
+image reconstruction decoder weights. Online config flags **cannot add these
+modules**. The inference loader still reconstructs the network from the IL
+checkpoint's saved model/vision contract and applies `strict=True` loading.
+
+For a new Recon/VIB experiment, start by training a new IL checkpoint with
+these *matching* settings in `configs/il/rl100_dp2d.yaml`:
+
+```yaml
+vision:
+  use_vib: true
+  use_recon: true
+  recon_loss_weight: 0.05
+  kl_loss_weight: 1.0
+  kl_beta: 0.00025
+  latent_dim: null
+policy:
+  use_recon: true
+```
+
+Leave the native `rgb_model`, DDIM, normalizer, optimizer and checkpoint
+contracts unchanged unless you explicitly intend to compare different IL
+baselines. `use_vib=true` changes the policy feature mapping; a previously
+validated no-VIB checkpoint cannot be made equivalent merely by loading
+part of its weights into a freshly constructed VIB model.
+
+Point `policy.checkpoint_path` at the validated *new* IL checkpoint, then
+enable Online auxiliary terms in
+`configs/online/rl100_dp2d_hinge_chest.yaml`:
+
+```yaml
+ppo:
+  fix_encoder: false
+  share_encoder: false
+  recon: true
+  value_recon: true
+  per_step_recon: true
+```
+
+Defaults stay `false` to preserve existing IL and Online runs. Native
+`ppo.recon` adds the encoder's combined Recon/VIB loss to the Actor PPO
+loss; `ppo.value_recon` adds the Critic encoder's combined loss to Value
+training; `ppo.per_step_recon` applies the Actor auxiliary loss at every
+DDIM denoising step rather than just the first, matching upstream. The
+native Critic is a deepcopy of the IL encoder when `share_encoder=false`.
+
+Important invariants enforced by ARBiM:
+- `policy.use_recon` and `vision.use_recon` agree.
+- `ppo.recon=true` requires `fix_encoder=false`.
+- `ppo.value_recon=true` requires `share_encoder=false`.
+- `ppo.per_step_recon=true` requires `ppo.recon=true`.
+- Online auxiliary objectives require a checkpoint with matching native
+  VIB/Recon encoder modules. There is no automatic partial checkpoint load.
+
+The original native `ppo.encoder_lr_scale` remains fixed at `1.0` in the
+ARBiM adapter; varying it also changes native optimizer ownership and
+requires separate checkpoint/resume integration. This change does not
+implicitly enable encoder-specific learning rates.
+
+**Reproducibility:** `config_resolved.yaml` stores the Online flags,
+and `run_meta.json` records the source IL checkpoint SHA256. Switching
+Recon/VIB settings requires a new IL and/or Online run as appropriate;
+do not resume an incompatible run. Existing checkpoints and defaults are
+unchanged.
+
+**Validation status:** source/static integration and configuration tests;
+the actual native GPU PPO/forward-backward sequence must be executed in
+the complete `arbim` environment before calling the migration validated.
 
 ## Environment setup
 
