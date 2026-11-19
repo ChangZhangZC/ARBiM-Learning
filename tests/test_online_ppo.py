@@ -93,3 +93,36 @@ def test_default_config_is_strict(tmp_path):
     cfg["ppo"]["share_encoder"] = None
     with pytest.raises(ValueError, match="ppo.share_encoder"):
         validate_config(cfg)
+
+
+@pytest.mark.parametrize("recon,value_recon,per_step_recon", [
+    (False, False, False), (True, False, False), (True, True, True),
+    (False, True, False),
+])
+def test_online_reconvib_configuration_is_valid(recon, value_recon, per_step_recon):
+    import yaml
+    from pathlib import Path
+    cfg = yaml.safe_load((Path(__file__).resolve().parents[1] /
+        "configs/online/rl100_dp2d_hinge_chest.yaml").read_text())
+    cfg["policy"]["checkpoint_path"] = "/verified/hinge_chest/best.ckpt"
+    cfg["ppo"].update(recon=recon, value_recon=value_recon,
+                      per_step_recon=per_step_recon,
+                      fix_encoder=False, share_encoder=False)
+    validate_config(cfg)
+
+
+@pytest.mark.parametrize("settings,expected_error", [
+    ({"recon": True, "fix_encoder": True}, "fix_encoder"),
+    ({"value_recon": True, "share_encoder": True}, "share_encoder"),
+    ({"per_step_recon": True, "recon": False}, "per_step_recon"),
+    ({"recon": "true"}, "ppo.recon"),
+])
+def test_online_reconvib_rejects_unusable_combinations(settings, expected_error):
+    import yaml
+    from pathlib import Path
+    cfg = yaml.safe_load((Path(__file__).resolve().parents[1] /
+        "configs/online/rl100_dp2d_hinge_chest.yaml").read_text())
+    cfg["policy"]["checkpoint_path"] = "/verified/hinge_chest/best.ckpt"
+    cfg["ppo"].update(settings)
+    with pytest.raises(ValueError, match=expected_error):
+        validate_config(cfg)
