@@ -77,8 +77,17 @@ def validate_config(cfg: Mapping[str, Any]) -> None:
         raise ValueError("ppo.value_depth must be >= 2.")
     if ppo.get("distill_phase", "off") != "off":
         raise ValueError("Task 6 V1 excludes distillation.")
-    if any(ppo.get(k) for k in ("use_bc", "recon", "value_recon")):
-        raise ValueError("Task 6 V1 excludes BC/reconstruction objectives.")
+    if ppo.get("use_bc"):
+        raise ValueError("Online BC is not supported.")
+    for flag in ("recon", "value_recon", "per_step_recon"):
+        if type(ppo.get(flag, False)) is not bool:
+            raise ValueError(f"ppo.{flag} must be boolean.")
+    if ppo.get("recon", False) and ppo["fix_encoder"]:
+        raise ValueError("ppo.recon requires ppo.fix_encoder=false.")
+    if ppo.get("value_recon", False) and ppo["share_encoder"]:
+        raise ValueError("ppo.value_recon requires ppo.share_encoder=false.")
+    if ppo.get("per_step_recon", False) and not ppo.get("recon", False):
+        raise ValueError("ppo.per_step_recon requires ppo.recon=true.")
     if type(cfg["env"].get("max_episode_steps")) is not int or cfg["env"]["max_episode_steps"] < 1:
         raise ValueError("env.max_episode_steps must be a positive integer.")
     if any(key in cfg["rollout"] for key in ("max_env_steps", "max_updates", "max_total_env_steps")):
@@ -381,6 +390,13 @@ def run(config: dict[str, Any], *, legacy_config: dict[str, Any] | None = None) 
     finally:
         _restore_rng(rng)
     logger.message(f"[ONLINE] run={run_dir}")
+    logger.message(
+        f"[VISION] use_recon={bool(getattr(policy.obs_encoder, 'use_recon', False))} "
+        f"use_vib={bool(getattr(policy.obs_encoder, 'use_vib', False))} "
+        f"ppo.recon={bool(cfg['ppo'].get('recon', False))} "
+        f"ppo.value_recon={bool(cfg['ppo'].get('value_recon', False))} "
+        f"ppo.per_step_recon={bool(cfg['ppo'].get('per_step_recon', False))}"
+    )
     logger.message("[LOG] train.log contains ARBiM summaries; native PPO tqdm/stdout is console-only.")
     logger.message(
         f"[DDIM] clip_std_min={getattr(policy.noise_scheduler, 'clip_std_min', None)} "
