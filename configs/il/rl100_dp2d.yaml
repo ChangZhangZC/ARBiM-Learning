@@ -1,6 +1,13 @@
 # Native RL1002D / DP-2D IL training configuration.
 # Change dataset.repo_id/root and training.task to use another LeRobot v3 dataset.
 # Native RL-100 actor, loss, normalizer, diffusion and EMA remain unchanged.
+# Match the Diffusion/Offline/2D *chunk two-stage shell overrides*, not the
+# disabled Recon/VIB defaults in upstream rl100_2d_epsilon.yaml.
+# PyYAML anchors mirror the original Hydra top-level switches: editing a
+# single flag updates both vision and policy, without runtime interpolation.
+use_recon: &use_recon true
+use_vib: &use_vib true
+
 dataset:
   repo_id: RobotControlStack/duobench
   root: /home/wezley/chang/datasets/duobench/transfer_cube/sim
@@ -19,12 +26,12 @@ vision:
   share_rgb_model: false # false = independent RGB backbones, true = shared
   imagenet_norm: true
   use_agent_pos: true
-  use_vib: false # native VIB latent heads; enable before IL training
-  use_recon: false # native image decoder; also set policy.use_recon=true
-  recon_loss_weight: 0.05 # native MultiImageObsEncoder default
-  kl_loss_weight: 1.0 # native default
-  kl_beta: 0.00025 # native default (VIB KL coefficient)
-  latent_dim: null # keep native visual feature dimension when unset
+  use_vib: *use_vib # inherits root use_vib, like upstream ${use_vib}
+  use_recon: *use_recon # inherits root use_recon, like upstream ${use_recon}
+  recon_loss_weight: 0.05 # native chunk two-stage Offline shell
+  kl_loss_weight: 1.0 # native DP-2D ResNet YAML
+  kl_beta: 0.0005 # native chunk two-stage Offline shell; base YAML is 1e-4
+  latent_dim: null # upstream ResNet YAML omits this => native default None
 
 policy:
   model: dp3
@@ -48,7 +55,7 @@ policy:
   encoder_type: resnet
   w_pc: false
   use_aug: false # true = native RandomShiftsAug during training only
-  use_recon: false # must equal vision.use_recon
+  use_recon: *use_recon # same root switch as vision.use_recon
   action_norm: true
   use_agent_pos: true
 

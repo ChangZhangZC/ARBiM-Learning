@@ -31,8 +31,17 @@ image reconstruction decoder weights. Online config flags **cannot add these
 modules**. The inference loader still reconstructs the network from the IL
 checkpoint's saved model/vision contract and applies `strict=True` loading.
 
-For a new Recon/VIB experiment, start by training a new IL checkpoint with
-these *matching* settings in `configs/il/rl100_dp2d.yaml`:
+For a new Recon/VIB experiment, the ARBiM IL YAML now mirrors the native
+Diffusion DP-2D chunk two-stage **launch-script overrides**: root switches
+`use_recon: true` and `use_vib: true` (via YAML anchors) drive the
+`vision.use_recon`, `vision.use_vib`, and `policy.use_recon` values.
+`vision.recon_loss_weight=0.05`, `vision.kl_loss_weight=1.0` and
+`vision.kl_beta=5e-4` match that offline shell. This differs from the
+upstream `rl100_2d_epsilon.yaml` defaults (`use_recon=false`,
+`use_vib=false`, `kl_beta=1e-4`) and from a second upstream two-stage
+script that uses `kl_beta=1e-4`.
+
+The effective model settings in `configs/il/rl100_dp2d.yaml` are:
 
 ```yaml
 vision:
@@ -40,7 +49,7 @@ vision:
   use_recon: true
   recon_loss_weight: 0.05
   kl_loss_weight: 1.0
-  kl_beta: 0.00025
+  kl_beta: 0.0005
   latent_dim: null
 policy:
   use_recon: true
@@ -65,7 +74,8 @@ ppo:
   per_step_recon: true
 ```
 
-Defaults stay `false` to preserve existing IL and Online runs. Native
+**Online PPO** defaults remain `false` to preserve existing Online runs;
+new IL runs use the updated, enabled Recon/VIB defaults. Native
 `ppo.recon` adds the encoder's combined Recon/VIB loss to the Actor PPO
 loss; `ppo.value_recon` adds the Critic encoder's combined loss to Value
 training; `ppo.per_step_recon` applies the Actor auxiliary loss at every
@@ -79,6 +89,15 @@ Important invariants enforced by ARBiM:
 - `ppo.per_step_recon=true` requires `ppo.recon=true`.
 - Online auxiliary objectives require a checkpoint with matching native
   VIB/Recon encoder modules. There is no automatic partial checkpoint load.
+
+The upstream chunk Online shell separately enables `ppo.recon=true`,
+`ppo.value_recon=true`, `ppo.per_step_recon=true`, and overrides the Encoder
+weights to `kl_beta=0.005` and `recon_loss_weight=0.1`. ARBiM intentionally
+does **not** auto-activate Online auxiliary losses or mutate a strict IL
+checkpoint's saved Encoder contract. Online parity for VIB sampling is also
+not yet claimed: RL-100's Online runner sets `force_stochastic_online=true`
+while ARBiM leaves the Online Encoder in `eval()` without force-stochastic
+sampling. Do not interpret the IL YAML update as full Online parity.
 
 The original native `ppo.encoder_lr_scale` remains fixed at `1.0` in the
 ARBiM adapter; varying it also changes native optimizer ownership and

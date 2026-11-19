@@ -129,3 +129,32 @@ def test_factory_passes_native_visual_auxiliary_options(monkeypatch, use_recon, 
     config["policy"]["use_recon"] = not use_recon
     with pytest.raises(ValueError, match="must match"):
         build_rl100_dp({}, config)
+
+
+def test_il_reconvib_yaml_matches_native_chunk_shell_and_couples_policy_flag():
+    """PyYAML anchors implement upstream Hydra root use_recon/use_vib switches."""
+    from pathlib import Path
+    import yaml
+
+    source = (Path(__file__).resolve().parents[1] /
+              "configs/il/rl100_dp2d.yaml").read_text(encoding="utf-8")
+    cfg = yaml.safe_load(source)
+    assert cfg["use_recon"] is True and cfg["use_vib"] is True
+    assert cfg["vision"]["use_recon"] is cfg["policy"]["use_recon"] is True
+    assert cfg["vision"]["use_vib"] is True
+    assert cfg["vision"]["recon_loss_weight"] == pytest.approx(0.05)
+    assert cfg["vision"]["kl_loss_weight"] == pytest.approx(1.0)
+    assert cfg["vision"]["kl_beta"] == pytest.approx(5e-4)
+    assert cfg["vision"]["latent_dim"] is None
+
+    # Changing each root switch must update the corresponding native module.
+    recon_off = yaml.safe_load(source.replace(
+        "use_recon: &use_recon true", "use_recon: &use_recon false", 1))
+    assert recon_off["vision"]["use_recon"] is False
+    assert recon_off["policy"]["use_recon"] is False
+    assert recon_off["vision"]["use_vib"] is True
+
+    vib_off = yaml.safe_load(source.replace(
+        "use_vib: &use_vib true", "use_vib: &use_vib false", 1))
+    assert vib_off["vision"]["use_vib"] is False
+    assert vib_off["vision"]["use_recon"] is True
