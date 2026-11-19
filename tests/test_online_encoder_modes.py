@@ -20,11 +20,12 @@ from arbim.rl.online.ppo_bridge import build_online_ppo, deterministic_vib_evalu
 
 
 class TinyEncoder(torch.nn.Module):
+    use_vib = False
+    use_recon = False
+
     def __init__(self):
         super().__init__()
         self.linear = torch.nn.Linear(3, 4)
-        self.use_vib = False
-        self.use_recon = False
         self.force_stochastic = False
         self.beta_kl = 2.5e-4
         self.kl_beta = 2.5e-4
