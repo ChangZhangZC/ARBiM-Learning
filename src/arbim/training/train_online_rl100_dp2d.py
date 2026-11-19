@@ -454,7 +454,7 @@ def run(config: dict[str, Any], *, legacy_config: dict[str, Any] | None = None) 
                 logger.event(
                     "rollout", record,
                     summary=(f"[ROLL] ep={episodes} env_steps={result['episode_steps']} "
-                             f"return={result['env_return']:.2f} "
+                             f"train_return={result['train_return']:.2f} "
                              f"stage={result['final_stage']} success={int(result['success'])}"),
                     # Individual episodes are kept in JSONL. TensorBoard uses
                     # per-PPO-update aggregates to avoid duplicate x-axis steps.
