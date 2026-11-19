@@ -54,7 +54,7 @@ policy:
   use_up_condition: true
   encoder_type: resnet
   w_pc: false
-  use_aug: false # true = native RandomShiftsAug during training only
+  use_aug: true # native DP-2D Chunk Offline shell; Online overrides to false
   use_recon: *use_recon # same root switch as vision.use_recon
   action_norm: true
   use_agent_pos: true
@@ -87,7 +87,7 @@ schedulers:
     clip_std_max: null
 
 optimizer:
-  lr: 0.0001
+  lr: 0.0002 # native DP-2D Chunk Offline shell (base YAML: 1e-4)
   betas: [0.95, 0.999]
   eps: 1.0e-8
   weight_decay: 1.0e-6
