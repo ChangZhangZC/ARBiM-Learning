@@ -638,13 +638,13 @@ def run(config: dict[str, Any], *, legacy_config: dict[str, Any] | None = None) 
                     with deterministic_vib_evaluation(eval_policy):
                         summary = evaluate_episodes(
                             adapter, eval_policy, spec,
-                        num_episodes=evaluation_cfg["num_episodes"], output_dir=folder,
-                        camera_map=cfg["env"]["camera_map"], execute_steps=span,
-                        max_env_steps=cfg["env"]["max_episode_steps"], post_success_steps=0,
-                        seed=eval_seed, deterministic=True,
-                        record_video=evaluation_cfg["record_video"],
-                        video_fps=evaluation_cfg["video_fps"],
-                        video_source=evaluation_cfg["video_source"],
+                            num_episodes=evaluation_cfg["num_episodes"], output_dir=folder,
+                            camera_map=cfg["env"]["camera_map"], execute_steps=span,
+                            max_env_steps=cfg["env"]["max_episode_steps"], post_success_steps=0,
+                            seed=eval_seed, deterministic=True,
+                            record_video=evaluation_cfg["record_video"],
+                            video_fps=evaluation_cfg["video_fps"],
+                            video_source=evaluation_cfg["video_source"],
                             verbose=False,
                         )
                 finally:
