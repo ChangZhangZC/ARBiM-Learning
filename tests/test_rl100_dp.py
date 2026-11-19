@@ -146,6 +146,8 @@ def test_il_reconvib_yaml_matches_native_chunk_shell_and_couples_policy_flag():
     assert cfg["vision"]["kl_loss_weight"] == pytest.approx(1.0)
     assert cfg["vision"]["kl_beta"] == pytest.approx(5e-4)
     assert cfg["vision"]["latent_dim"] is None
+    assert cfg["policy"]["use_aug"] is True
+    assert cfg["optimizer"]["lr"] == pytest.approx(2e-4)
 
     # Changing each root switch must update the corresponding native module.
     recon_off = yaml.safe_load(source.replace(
