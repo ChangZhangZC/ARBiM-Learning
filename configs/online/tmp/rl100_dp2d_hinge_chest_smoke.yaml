@@ -44,6 +44,9 @@ ppo:
   value_depth: 3
   fix_encoder: false      # RL-100 Chunk Online default: update Actor RGB Encoder
   share_encoder: false    # RL-100 Chunk Online default: Critic owns independent RGB Encoder
+  recon: false           # native Actor Recon/VIB auxiliary loss; requires Recon/VIB IL checkpoint
+  value_recon: false     # native Critic auxiliary loss; requires independent Critic Encoder
+  per_step_recon: false  # native: apply Actor auxiliary loss at every DDIM step (else first only)
   advantage_normalize: true
   clip_value: true       # RL-100 base PPO setting
   linear_lr_decay: true  # native RL-100 linear schedule over chunk decisions
