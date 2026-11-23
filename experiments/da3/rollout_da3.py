@@ -8,7 +8,7 @@ from __future__ import annotations
 import time
 from collections import deque
 from collections.abc import Callable, Mapping
- from typing import Any
+from typing import Any
 
 import numpy as np
 
