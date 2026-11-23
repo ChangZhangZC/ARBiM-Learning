@@ -1,0 +1,11 @@
+# Native RL100 DP-2D inference (no environment or robot control).
+# Architecture, observation/action dimensions, camera mapping, diffusion and
+# Normalizer come exclusively from the checkpoint's saved contract.
+inference:
+  checkpoint_path: null             # set here or via --checkpoint; best/last/step_*.ckpt
+  weights: raw                   # ema only for full training checkpoints (last/legacy step)
+  device: cuda:0                 # cuda:0, cuda:1, cpu, ...
+  deterministic: true            # true=native deterministic DDIM; false=stochastic
+  n_action_steps: null           # null=checkpoint; optional output slice length (1..predicted steps)
+  num_inference_steps: null      # null=checkpoint; otherwise override native DDIM denoising steps
+  seed: null                     # null=leave PyTorch RNG unchanged; integer seeds once per run

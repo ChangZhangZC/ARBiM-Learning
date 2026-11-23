@@ -1,56 +1,97 @@
 # ARBiM-Learning
 
-Minimal, environment-independent learning integration for **ARBiM** (Asymmetric Reinforcement for Bimanual Manipulation).
+**ARBiM** (Asymmetric Reinforcement for Bimanual Manipulation) integrates native
+**RL-100 DP-2D** with LeRobot datasets and DuoBench simulation. The current
+baseline covers **IL training → checkpoint inference → Hinge-Chest rollout →
+multi-episode evaluation and RGB video recording**. RL post-training and routed
+rollout are not implemented.
 
-Current scope: establish the repository structure and preserve upstream sources. **IL, RL, runtime, and DuoBench integration have not yet been implemented.**
+## Setup
 
-## Repository layout
-
-- `third_party/rl100/`: upstream RL-100 as a pinned Git submodule.
-- `third_party/lerobot/`: upstream LeRobot as a pinned Git submodule.
-- `src/arbim/policy/`: model loading/construction adapter (planned).
-- `src/arbim/data/`: LeRobot-to-RL-100 batch adapter (planned).
-- `src/arbim/training/`: IL training entry (planned).
-- `src/arbim/runtime.py`: inference interface (planned).
-- `src/arbim/integrations/`: external environment adapters (planned; DuoBench is deferred).
-- `configs/il/`, `scripts/`, `tests/`: experiments, CLI entry points, and tests (planned).
-- `outputs/`: ignored local training artifacts.
-
-## Pinned upstream versions
-
-- RL-100: [Lei-Kun/RL-100](https://github.com/Lei-Kun/RL-100), commit `6b6afceb7eb12525398207b5d6e66908863dc385` (2026-09-28, RGB observation augmentation fix).
-- LeRobot: [huggingface/lerobot](https://github.com/huggingface/lerobot), LeTools-Learning-aligned development commit `a07f22e22ce88cddff1f6eddced9ea008fbfc37c` (`pyproject.toml` version `0.5.2`; not claimed to be a tagged release).
-
-After cloning the repository:
+Use a prepared Python 3.12 environment with the native RL-100, LeRobot,
+DuoBench/RCS, and GPU dependencies installed. `environment.yml` is a minimal
+starting point, **not** a complete simulator installation.
 
 ```bash
-git submodule update --init third_party/rl100 third_party/lerobot
+git submodule update --init third_party/rl100 third_party/lerobot third_party/duobench
+python -m pip install -e .
+export PYTHONPATH="$PWD/src:$PWD/third_party/rl100/RL-100:$PWD/third_party/lerobot/src${PYTHONPATH:+:$PYTHONPATH}"
 ```
 
-Upstream RL-100 Python sources live under `third_party/rl100/RL-100/`, rather than the outer submodule root. Submodule checkout does **not** install its dependencies. The pinned LeRobot source requires Python >=3.12. Runtime compatibility with the native RL-100 dependencies and DuoBench has not been validated; pinning a Git submodule does not install dependencies.
+Do not use recursive submodule initialization unless separately required:
+upstream RL-100 contains an unrelated nested submodule with an incomplete URL.
 
-### Upstream behavior review
+## Run
 
-The RL-100 update from `7c5df9a` to `6b6afce` adds RGB augmentation key selection based on observation `shape_meta`. An intermediate commit changes the default `chunk_as_single_action` from `True` to `False` across 2D/3D diffusion and flow configurations. ARBiM experiment configurations must explicitly choose the desired chunk semantics before RL training. The update has been source-reviewed, **not** runtime-tested.
+Run commands from the repository root. Edit the corresponding YAML to match
+your dataset, checkpoint, GPU, and output directories.
 
-## Python environment (minimal, unvalidated)
-
-The first-stage baseline is Python **3.12** with PyTorch **2.9.1** and torchvision **0.24.1**. `environment.yml` contains only a small common ML/configuration dependency set; it does **not** install the two Git submodules or any robot/simulation stack.
+**1. IL training** — `configs/il/rl100_dp2d.yaml`
+(set `dataset.root`, `training.task`, and training limits):
 
 ```bash
-git submodule update --init third_party/rl100 third_party/lerobot
-conda env create -f environment.yml
-conda activate arbim-learning
-python -m pip check
-python -c "import sys, torch, torchvision; print(sys.version); print(torch.__version__, torchvision.__version__, torch.version.cuda, torch.cuda.is_available())"
+python -m arbim.training.train_rl100_dp2d --config configs/il/rl100_dp2d.yaml
 ```
 
-The PyTorch wheel/CUDA runtime must be checked on the actual Linux GPU host; for a specific CUDA build use the [official PyTorch 2.9.1 install matrix](https://pytorch.org/get-started/previous-versions/). This environment is **not yet validated** with the RL-100 native policy. Its original installation was verified on Python 3.8 / torch 2.4, and native RL-100 imports may require additional compiled PyTorch3D and image-encoder dependencies. The pinned LeRobot source uses Python >=3.12 and Hugging Face Hub >=1.0; RL-100's verified Hugging Face Hub version was 0.33.1, so the combination needs a real import test.
+Training outputs use `outputs/il/<task>/<method>/<run_name>/`.
+In `configs/il/rl100_dp2d.yaml`, the default `training.run_name: run_{timestep}`
+expands the launch time (e.g. `run_20261117_130000`).
+Use `my_experiment_{timestep}` for a custom label with a time suffix,
+or a fixed name without `{timestep}`.
 
-Once dataset work begins, install and test the pinned LeRobot dataset extras separately rather than pulling them into this initial baseline. DuoBench integration, ROS, robot hardware support, and RL training extras are intentionally deferred.
+Resume an existing run using its `last.ckpt`:
 
-## Development workflow
+```bash
+python -m arbim.training.train_rl100_dp2d --resume outputs/il/YOUR_TASK/rl100_dp2d/YOUR_RUN
+```
 
-`gpt/**` (implementation) → `feature/**` (review and testing) → `dev` (squash merge after approval).
+**2. Checkpoint inference smoke test** — `configs/inference/rl100_dp2d.yaml`.
+Requires a checkpoint and access to its validation dataset:
 
-Do not modify upstream submodule source, `main`, `dev`, LeTools-Learning, kdc_ARBiM, or DuoBench as part of this bootstrap task.
+```bash
+python -m arbim.policy.inference_rl100_dp2d \
+  --config configs/inference/rl100_dp2d.yaml \
+  --checkpoint /path/to/best.ckpt
+```
+
+**3. DuoBench Hinge-Chest rollout** — `configs/rollout/hinge_chest.yaml`.
+Set `policy.checkpoint_path` to the trained checkpoint first:
+
+```bash
+# Interactive launcher (normal mode; routed mode is not implemented)
+python -m arbim.rollout.launch
+
+# One closed-loop episode
+python -m arbim.rollout.single --config configs/rollout/hinge_chest.yaml --max-env-steps 300
+
+# Multi-episode evaluation + three-camera MP4 recording
+python -m arbim.rollout.eval --config configs/rollout/hinge_chest.yaml --episodes 10
+```
+
+`hinge_chest.yaml` controls GUI/realtime, max steps, seeds, camera resolution,
+and `output.video_source` (`native` for HD or `policy` for 224×224).
+Evaluation outputs go to `outputs/eval/hinge_chest/<run_id>/` and include
+`config_resolved.yaml`, `episodes.jsonl`, `summary.json`, and
+`episode_*/{head,left_wrist,right_wrist}.mp4`.
+The default `output.run_id: eval_{timestep}` can be renamed to, e.g.,
+`test_policy_{timestep}`. Eval timestamps include microseconds.
+
+For local TensorBoard, edit `path=` at the top of `scripts/tensorboard.sh`
+and launch from the repository root:
+
+```bash
+bash scripts/tensorboard.sh
+```
+
+## Implementation
+
+- `src/arbim/data/` — LeRobot → RL-100 dataset adapter.
+- `src/arbim/policy/` — native model construction and checkpoint inference.
+- `src/arbim/training/` — IL trainer, checkpoints, and logging.
+- `src/arbim/envs/` and `src/arbim/rollout/` — DuoBench adapter and evaluation.
+- `third_party/` — pinned RL-100, LeRobot, and DuoBench submodules.
+
+Native RL-100 Actor, Normalizer, diffusion, and loss remain unchanged.
+More training and Resume details: [IL training guide](docs/rl100_dp2d_training.md).
+
+Development flow: `gpt/**` → `feature/**` → `dev` (Squash Merge after validation).
