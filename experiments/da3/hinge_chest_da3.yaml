@@ -1,0 +1,57 @@
+# Isolated DA3 wrist-depth experiment. Adapted from the Hinge-Chest IL baseline.
+env:
+  backend: duobench
+  task: hinge_chest
+
+  headless: false
+  control_mode: joints            # absolute joint positions
+  relative_to: none
+
+  frequency: 30
+  camera_resolution: null        # null=RCS native (currently 1280x720); [1920, 1080] for Full HD
+  realtime: true
+  async_control: true
+
+  binary_gripper: true
+  binarize_state_gripper: true    # RCS lerobot-convert --binarize-gripper
+  gripper_threshold: 0.9         # RCS converter uses > 0.9
+
+  camera_map:
+    observation.images.head: head
+    observation.images.left_wrist: left_wrist
+    observation.images.right_wrist: right_wrist
+
+policy:
+  checkpoint_path: outputs/train_il/hinge_chest/rl100_dp2d/20261115_132245/checkpoints/best.ckpt
+  weights: raw
+  device: cuda:0
+
+  deterministic: true
+  n_action_steps: null           # null = checkpoint's native action slice
+  num_inference_steps: null      # null = checkpoint's native DDIM settings
+
+rollout:
+  execute_steps: 16              # each prediction executes up to this many steps
+  max_env_steps: 1000            # set --max-env-steps 32 for initial smoke
+  post_success_steps: 5          # execute five additional policy actions after native success (0=upstream)
+
+  seed: 42
+  num_episodes: 10               # CLI --episodes overrides
+
+output:
+  # Output path: outputs/da3_eval/hinge_chest/<run_id>/
+  root: outputs/da3_eval
+  run_id: da3_{timestep}        # e.g. my_eval_{timestep}; null=timestamp only
+
+  record_video: true             # CLI --no-video to disable
+  video_source: native           # native=original RGB resolution; policy=224x224
+  video_fps: null                # null=env.frequency, one frame per env step (+ reset)
+
+# Native RGB for DA3 comes from DuoBench raw frames at each new policy chunk.
+# Depth is saved as raw float arrays (.npy), not normalized grayscale images.
+da3:
+  model: depth-anything/DA3MONO-LARGE
+  device: cuda:0
+  cameras:
+    - left_wrist
+    - right_wrist
