@@ -1,4 +1,14 @@
-# DA3 experimental configuration placeholder.
-# No executable settings are defined yet.
-# When implementation is approved, keep it separate from the established
-# configs/rollout/hinge_chest.yaml IL evaluation baseline.
+# DA3MONO-LARGE official single-image inference smoke test.
+# This is an isolated experiment; no IL/RL rollout is executed.
+model:
+  id: depth-anything/DA3MONO-LARGE
+  device: cuda:0
+  process_res: 504
+
+input:
+  image: third_party/da3/assets/examples/SOH/000.png
+
+output:
+  # Relative to the ARBiM-Learning repository root, not the shell CWD.
+  root: outputs/experiments/da3
+  # Script uses <root>/hf_cache for freshly downloaded model weights.
