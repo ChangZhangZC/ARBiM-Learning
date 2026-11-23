@@ -7,3 +7,6 @@
 [submodule "third_party/duobench"]
 	path = third_party/duobench
 	url = https://github.com/RobotControlStack/duobench.git
+[submodule "third_party/da3"]
+	path = third_party/da3
+	url = https://github.com/ByteDance-Seed/Depth-Anything-3.git
