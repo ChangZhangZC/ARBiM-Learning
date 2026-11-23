@@ -8,11 +8,130 @@ collect on-policy DuoBench trajectories, and optimize with the pinned native
 
 Task 7 adds run management, local TensorBoard, compact console summaries,
 an explicit PPO mini-batch-step training budget and strict resumable checkpoints. It does
-**not** add offline IQL, dynamics, distillation, BC/reconstruction loss, DDP,
+**not** add offline IQL, dynamics, distillation, BC loss, DDP,
 asymmetric updates, or persistent online trajectory datasets. The native PPO
 mathematics and diffusion sampler are not modified.
 
 Only `hinge_chest` is supported by the current task adapter/reward evaluator.
+
+
+## Native Recon/VIB (opt-in)
+
+This integration reuses the **pinned native RL-100** implementation of
+`MultiImageObsEncoder.Recon_VIB_loss()`, `RL1002D.obs2latent_recon()`,
+`RL1002D.compute_loss()`, and the native online `dp_align_update_no_share()`.
+No reconstruction head, VIB reparameterization, reconstruction objective,
+PPO ratio, or diffusion sampling logic is reimplemented in ARBiM.
+
+### The checkpoint contract is part of the architecture
+
+An existing IL checkpoint trained with `vision.use_vib=false` and
+`vision.use_recon=false` does not contain the native VIB mu/logvar heads or
+image reconstruction decoder weights. Online config flags **cannot add these
+modules**. The inference loader still reconstructs the network from the IL
+checkpoint's saved model/vision contract and applies `strict=True` loading.
+
+For a new Recon/VIB experiment, the ARBiM IL YAML now mirrors the native
+Diffusion DP-2D chunk two-stage **launch-script overrides**: root switches
+`use_recon: true` and `use_vib: true` (via YAML anchors) drive the
+`vision.use_recon`, `vision.use_vib`, and `policy.use_recon` values.
+`vision.recon_loss_weight=0.05`, `vision.kl_loss_weight=1.0` and
+`vision.kl_beta=5e-4` match that offline shell. This differs from the
+upstream `rl100_2d_epsilon.yaml` defaults (`use_recon=false`,
+`use_vib=false`, `kl_beta=1e-4`) and from a second upstream two-stage
+script that uses `kl_beta=1e-4`.
+
+The effective model settings in `configs/il/rl100_dp2d.yaml` are:
+
+```yaml
+vision:
+  use_vib: true
+  use_recon: true
+  recon_loss_weight: 0.05
+  kl_loss_weight: 1.0
+  kl_beta: 0.0005
+  latent_dim: null
+policy:
+  use_recon: true
+```
+
+Leave the native `rgb_model`, DDIM, normalizer, optimizer and checkpoint
+contracts unchanged unless you explicitly intend to compare different IL
+baselines. `use_vib=true` changes the policy feature mapping; a previously
+validated no-VIB checkpoint cannot be made equivalent merely by loading
+part of its weights into a freshly constructed VIB model.
+
+Point `policy.checkpoint_path` at the validated *new* IL checkpoint.
+The native Diffusion DP-2D **Chunk Online** shell enables auxiliary updates and
+overrides the regularization coefficients independently of its IL checkpoint:
+
+```yaml
+ppo:
+  fix_encoder: false
+  share_encoder: false
+  recon: true
+  value_recon: true
+  per_step_recon: true
+  force_stochastic_online: true
+  kl_beta: 0.005
+  recon_loss_weight: 0.1
+```
+
+ARBiM's current Online and test-only smoke YAMLs now use this native Chunk
+profile by default, unlike the previous no-aux PPO profile. Both require a
+**new** native Recon/VIB IL checkpoint. For an old no-aux IL checkpoint,
+explicitly turn off `ppo.recon`, `ppo.value_recon`, and
+`ppo.per_step_recon`; do not silently partially load its parameters.
+
+The upstream IL Chunk Shell also has `policy.use_aug=True` and
+`optimizer.lr=2e-4`. These IL defaults are aligned. Its Online Shell uses
+`policy.use_aug=False`; ARBiM disables this training-only augmentation in
+memory after strict IL loading, without rewriting the original checkpoint.
+It does **not** carry random image shifts into PPO log-prob recomputation.
+
+The pinned native `MultiImageObsEncoder` uses `self.training or
+self.force_stochastic` to sample VIB latents. Like upstream
+`train_ddp.py::_online_ft_impl()`, ARBiM's Online Actor Encoder remains
+in `eval()` but sets `force_stochastic=True` for PPO rollout and updates.
+Independent Critic VIB is kept deterministic. During Online evaluation the
+Actor VIB flag is temporarily disabled and restored afterward (including
+errors), so deterministic DDIM evaluation uses the mean latent rather than
+sampling additional VIB noise. These runtime booleans are intentionally not
+part of model `state_dict()`, so are reconstructed from the saved Online
+config when strictly resuming a run.
+
+Native `ppo.recon` adds combined Recon+VIB loss to the Actor PPO objective;
+`ppo.value_recon` adds the Critic's combined auxiliary loss; and
+`ppo.per_step_recon` repeats the Actor auxiliary loss at every denoising
+step. The independent Critic Encoder is copied from the IL Encoder, but the
+ValueMLP head is not initialized from upstream Offline IQL.
+
+The native Online Shell sets `encoders.resnet.kl_beta=0.005` and
+`encoders.resnet.recon_loss_weight=0.1` (versus IL's 5e-4 and 0.05).
+ARBiM stores the Online-only overrides under `ppo` so its strict Online
+checkpoint contract includes them. The adapter applies them to the native
+Actor and separate Critic Encoder **after** strict IL weight loading; these
+attributes scale native losses but do not change model parameter shapes.
+
+**Scope:** this is **Recon/VIB IL→Online behavior parity**, not a
+reimplementation of RL-100's full Offline IQL/Dynamics/Distillation stages,
+vectorized simulator, original datasets or identical training budgets.
+Those stages remain outside ARBiM's current research scope; success
+statistics cannot be interpreted as a reproduction of all RL-100 results.
+
+The native `ppo.encoder_lr_scale` stays at `1.0` here. Changing it also
+changes optimizer ownership and would require a separate, explicitly
+validated checkpoint/resume adaptation.
+
+**Reproducibility:** `config_resolved.yaml` stores the Online flags,
+and `run_meta.json` records the source IL checkpoint SHA256. Switching
+Recon/VIB settings requires a new IL and/or Online run as appropriate;
+do not resume an incompatible run. Existing checkpoints and defaults are
+unchanged.
+
+**Validation status:** source/static integration and configuration tests;
+the actual native GPU PPO/forward-backward sequence must be executed in
+the complete `arbim` environment before calling the migration validated.
 
 ## Environment setup
 

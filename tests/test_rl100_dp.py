@@ -80,3 +80,83 @@ def test_factory_uses_unmodified_native_classes(
     getter.get_resnet = unavailable_weights
     with pytest.raises(RuntimeError, match="pretrained weights unavailable"):
         build_rl100_dp(meta, config)
+
+
+@pytest.mark.parametrize("use_recon,use_vib", [(False, False), (False, True), (True, False), (True, True)])
+def test_factory_passes_native_visual_auxiliary_options(monkeypatch, use_recon, use_vib):
+    """Native VIB and reconstruction heads are constructed by upstream, not ARBiM."""
+    import sys
+    import types
+
+    def module(name):
+        m = types.ModuleType(name)
+        m.__path__ = []
+        monkeypatch.setitem(sys.modules, name, m)
+        return m
+
+    module("hydra").utils = module("hydra.utils")
+    sys.modules["hydra.utils"].instantiate = lambda cfg: cfg
+    for name in ("rl_100", "rl_100.model", "rl_100.model.vision", "rl_100.policy"):
+        module(name)
+    module("rl_100.model.vision.model_getter").get_resnet = lambda **kwargs: kwargs
+
+    class Encoder:
+        def __init__(self, **kwargs):
+            self.options = kwargs
+
+    class Policy:
+        def __init__(self, **kwargs):
+            self.options = kwargs
+
+    module("rl_100.model.vision.multi_image_obs_encoder").MultiImageObsEncoder = Encoder
+    module("rl_100.policy.rl100_2d").RL1002D = Policy
+    config = {
+        "vision": {
+            "rgb_model": {"name": "resnet18", "weights": None},
+            "use_recon": use_recon, "use_vib": use_vib,
+            "kl_beta": 2.5e-4, "recon_loss_weight": 0.05,
+        },
+        "policy": {
+            "model": "dp3", "scheduler_type": "ddim", "use_recon": use_recon,
+        },
+        "schedulers": {"ddim": {"_target_": "ddim"}, "cm": {"_target_": "cm"}},
+    }
+    policy = build_rl100_dp({}, config)
+    assert policy.options["obs_encoder"].options["use_recon"] is use_recon
+    assert policy.options["obs_encoder"].options["use_vib"] is use_vib
+    assert policy.options["obs_encoder"].options["kl_beta"] == 2.5e-4
+    assert policy.options["use_recon"] is use_recon
+    config["policy"]["use_recon"] = not use_recon
+    with pytest.raises(ValueError, match="must match"):
+        build_rl100_dp({}, config)
+
+
+def test_il_reconvib_yaml_matches_native_chunk_shell_and_couples_policy_flag():
+    """PyYAML anchors implement upstream Hydra root use_recon/use_vib switches."""
+    from pathlib import Path
+    import yaml
+
+    source = (Path(__file__).resolve().parents[1] /
+              "configs/il/rl100_dp2d.yaml").read_text(encoding="utf-8")
+    cfg = yaml.safe_load(source)
+    assert cfg["use_recon"] is True and cfg["use_vib"] is True
+    assert cfg["vision"]["use_recon"] is cfg["policy"]["use_recon"] is True
+    assert cfg["vision"]["use_vib"] is True
+    assert cfg["vision"]["recon_loss_weight"] == pytest.approx(0.05)
+    assert cfg["vision"]["kl_loss_weight"] == pytest.approx(1.0)
+    assert cfg["vision"]["kl_beta"] == pytest.approx(5e-4)
+    assert cfg["vision"]["latent_dim"] is None
+    assert cfg["policy"]["use_aug"] is True
+    assert cfg["optimizer"]["lr"] == pytest.approx(2e-4)
+
+    # Changing each root switch must update the corresponding native module.
+    recon_off = yaml.safe_load(source.replace(
+        "use_recon: &use_recon true", "use_recon: &use_recon false", 1))
+    assert recon_off["vision"]["use_recon"] is False
+    assert recon_off["policy"]["use_recon"] is False
+    assert recon_off["vision"]["use_vib"] is True
+
+    vib_off = yaml.safe_load(source.replace(
+        "use_vib: &use_vib true", "use_vib: &use_vib false", 1))
+    assert vib_off["vision"]["use_vib"] is False
+    assert vib_off["vision"]["use_recon"] is True

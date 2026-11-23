@@ -1,6 +1,7 @@
 """Build the pinned RL-100 Online PPO without copying or rewriting its loss."""
 from __future__ import annotations
 
+from contextlib import contextmanager
 from copy import deepcopy
 from types import SimpleNamespace
 from typing import Any, Mapping
@@ -8,6 +9,20 @@ from typing import Any, Mapping
 import torch
 
 from arbim.rl.online.policy_adapter import validate_online_policy
+
+
+@contextmanager
+def deterministic_vib_evaluation(policy: Any):
+    """Use the native VIB mean for evaluation; restore Online sampling afterward."""
+    encoder = policy.obs_encoder
+    previous = getattr(encoder, "force_stochastic", None)
+    try:
+        if previous is not None:
+            encoder.force_stochastic = False
+        yield
+    finally:
+        if previous is not None:
+            encoder.force_stochastic = previous
 
 
 def build_online_ppo(policy: Any, settings: Mapping[str, Any]):
@@ -32,8 +47,36 @@ def build_online_ppo(policy: Any, settings: Mapping[str, Any]):
     share_encoder = cfg.get("share_encoder")
     if type(fix_encoder) is not bool or type(share_encoder) is not bool:
         raise ValueError("fix_encoder and share_encoder must be booleans.")
-    if cfg.get("use_bc") or cfg.get("value_recon") or cfg.get("recon"):
-        raise ValueError("BC/Recon objectives are outside Task 6 V1.")
+    if cfg.get("use_bc"):
+        raise ValueError("Online BC remains outside the current scope.")
+    force_stochastic_online = cfg.get("force_stochastic_online", False)
+    if type(force_stochastic_online) is not bool:
+        raise ValueError("ppo.force_stochastic_online must be boolean.")
+    for key in ("kl_beta", "recon_loss_weight"):
+        value = cfg.get(key)
+        if value is not None and (isinstance(value, bool) or not isinstance(value, (int, float))
+                                  or not 0 < float(value) < float("inf")):
+            raise ValueError(f"ppo.{key} must be a positive finite number.")
+    recon = cfg.get("recon", False)
+    value_recon = cfg.get("value_recon", False)
+    per_step_recon = cfg.get("per_step_recon", False)
+    for name, enabled in (("recon", recon), ("value_recon", value_recon),
+                          ("per_step_recon", per_step_recon)):
+        if type(enabled) is not bool:
+            raise ValueError(f"ppo.{name} must be boolean.")
+    if recon and fix_encoder:
+        raise ValueError("ppo.recon requires fix_encoder=false; native PPO skips Actor aux loss otherwise.")
+    if value_recon and share_encoder:
+        raise ValueError("ppo.value_recon requires share_encoder=false in native RL-100.")
+    if per_step_recon and not recon:
+        raise ValueError("ppo.per_step_recon requires ppo.recon=true.")
+    encoder = policy.obs_encoder
+    supports_aux = bool(getattr(encoder, "use_recon", False) or getattr(encoder, "use_vib", False))
+    if (recon or value_recon) and not supports_aux:
+        raise ValueError(
+            "Recon/VIB requires a matching IL checkpoint built with vision.use_recon "
+            "or vision.use_vib; changing only Online YAML cannot add native heads."
+        )
     if cfg["mini_batch_size"] > cfg["batch_size"]:
         raise ValueError("PPO mini_batch_size cannot exceed batch_size.")
     if cfg.get("distill_phase", "off") != "off":
@@ -67,8 +110,9 @@ def build_online_ppo(policy: Any, settings: Mapping[str, Any]):
         max_lr_critic=float(cfg["max_lr_critic"]),
         adaptive_kl=float(cfg["adaptive_kl"]),
         fix_encoder=fix_encoder, share_encoder=share_encoder, encoder_lr_scale=1.0,
-        actor_grad=True, use_bc=False, recon=False, value_recon=False,
-        per_step_recon=False, use_adv_norm=bool(cfg["advantage_normalize"]),
+        actor_grad=True, use_bc=False, recon=recon, value_recon=value_recon,
+        force_stochastic_online=force_stochastic_online,
+        per_step_recon=per_step_recon, use_adv_norm=bool(cfg["advantage_normalize"]),
         use_grad_clip=True, is_clip_value=bool(cfg["clip_value"]),
         use_lr_decay=bool(cfg["linear_lr_decay"]),
         v_encoder=False, iterations=0,
@@ -101,9 +145,26 @@ def build_online_ppo(policy: Any, settings: Mapping[str, Any]):
     # Explicitly restore gradients if the incoming IL model had frozen params.
     bridge._policy.obs_encoder.requires_grad_(not fix_encoder)
     bridge._policy.obs_encoder.eval()  # native RL-100 keeps Online encoder in eval mode
+
+    # The upstream Online launcher overrides IL regularization coefficients
+    # after restoring its BC model; these are ordinary attributes, not weights.
+    def configure_auxiliary_weights(obs_encoder: Any) -> None:
+        if getattr(obs_encoder, "use_vib", False) and cfg.get("kl_beta") is not None:
+            obs_encoder.kl_beta = float(cfg["kl_beta"])
+            obs_encoder.beta_kl = float(cfg["kl_beta"])
+        if getattr(obs_encoder, "use_recon", False) and cfg.get("recon_loss_weight") is not None:
+            obs_encoder.recon_loss_weight = float(cfg["recon_loss_weight"])
+
+    configure_auxiliary_weights(bridge._policy.obs_encoder)
+    if hasattr(bridge._policy.obs_encoder, "force_stochastic"):
+        bridge._policy.obs_encoder.force_stochastic = force_stochastic_online
     if not share_encoder:
         bridge.critic._obs_encoder.requires_grad_(True)
         bridge.critic._obs_encoder.eval()
+        configure_auxiliary_weights(bridge.critic._obs_encoder)
+        # The independent value encoder remains deterministic, as in upstream IQL.
+        if hasattr(bridge.critic._obs_encoder, "force_stochastic"):
+            bridge.critic._obs_encoder.force_stochastic = False
         if bridge.critic._obs_encoder is bridge._policy.obs_encoder:
             raise RuntimeError("Independent Critic must own a distinct Encoder.")
     bridge._old_policy.requires_grad_(False)
