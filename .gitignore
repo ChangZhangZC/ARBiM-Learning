@@ -10,7 +10,6 @@ __pycache__/
 logs/
 wandb/
 /outputs/*
-!/outputs/.gitkeep
 *.pt
 *.pth
 *.ckpt

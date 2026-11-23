@@ -1,0 +1,89 @@
+# Task 6 V1 Online PPO. Set policy.checkpoint_path to a VERIFIED Hinge-Chest IL model.
+# No upstream code is edited. Offline RL/IQL, CM, DDP and asymmetric RL are excluded.
+env:
+  backend: duobench
+  task: hinge_chest
+  headless: true
+  control_mode: joints
+  relative_to: none
+  frequency: 30
+  camera_resolution: null
+  realtime: false
+  async_control: true
+  binary_gripper: true
+  binarize_state_gripper: true
+  gripper_threshold: 0.9
+  max_episode_steps: 500  # common training/eval cap; partial final chunks use variable-span GAE
+  camera_map:
+    observation.images.head: head
+    observation.images.left_wrist: left_wrist
+    observation.images.right_wrist: right_wrist
+
+policy:
+  checkpoint_path: null  # required path to validated Hinge-Chest best.ckpt/last.ckpt
+  weights: raw
+  device: cuda:0
+  # null preserves the exact IL checkpoint's action span and denoising schedule
+  n_action_steps: null    # 1 for native single-step Online PPO
+  num_inference_steps: null
+
+ppo:
+  max_steps: 10000     # PPO mini-batch passes, NOT rollout cycles or env steps
+  ratio_mode: chunk_joint # chunk_joint; per_action_step ONLY if n_action_steps=1
+  batch_size: 1024        # RL-100 Chunk Online nominal transitions; collect whole episodes
+  mini_batch_size: 128    # RL-100 Chunk Online
+  K_epochs: 5             # RL-100 Chunk Online
+  epsilon: 0.2
+  gamma: 0.997           # RL-100 Chunk Online shell override
+  gae_lambda: 0.95
+  actor_lr: 0.000002     # RL-100 Chunk Online shell override
+  critic_lr: 0.0003      # RL-100 Chunk Online shell override
+  value_hidden_dim: 512  # RL-100 Chunk Online critic
+  value_depth: 3
+  fix_encoder: false      # RL-100 Chunk Online default: update Actor RGB Encoder
+  share_encoder: false    # RL-100 Chunk Online default: Critic owns independent RGB Encoder
+  recon: true            # native Chunk Online shell: Actor Recon + VIB KL
+  value_recon: true      # native Chunk Online shell: independent Critic aux loss
+  per_step_recon: true   # native Chunk Online shell: every DDIM step
+  force_stochastic_online: true # native Online VIB sampling in eval-mode Actor Encoder
+  kl_beta: 0.005         # native Online shell override of IL KL weight
+  recon_loss_weight: 0.1 # native Online shell override of IL image MSE weight
+  advantage_normalize: true
+  clip_value: true       # RL-100 base PPO setting
+  linear_lr_decay: true  # native RL-100 linear schedule over chunk decisions
+  adaptive_kl: 0.02
+  min_lr_actor: 0.0000005  # native default; unused while linear decay is enabled
+  max_lr_actor: 0.00001    # native default; unused while linear decay is enabled
+  min_lr_critic: 0.0001   # native default; unused while linear decay is enabled
+  max_lr_critic: 0.001    # native default; unused while linear decay is enabled
+reward:
+  mode: stage_increment  # env_raw / stage_increment; weights defined in reward Python
+
+rollout:
+  seed: 42              # seeds for on-policy training episodes
+
+evaluation:
+  enabled: true
+  every_updates: 25  # full PPO rollout/update cycles; ~10 evals at default budget
+  num_episodes: 30  # native RL-100 Online Chunk example uses 30 eval episodes
+  seed: 100042          # constant across all evaluations for comparable curves
+  record_video: false
+  video_source: native    # native/policy
+  video_fps: 30
+
+checkpoint:
+  every_steps: 1000      # PPO mini-batch steps, same unit as ppo.max_steps; save after full PPO update
+  keep_last: 6           # policy-only update_*.ckpt; last.ckpt always retained
+  save_on_finish: true
+  resume: null           # prefer --resume <run_dir> CLI
+logging:
+  jsonl: true
+  progress_bar: true   # ARBiM outer progress only; native PPO tqdm remains enabled
+  tensorboard:
+    enabled: true        # fresh PPO-step runs use tensorboard_ppo_steps/
+  ratio_diagnostics:
+    enabled: true
+    every_updates: 5    # upstream native PPO ratio sampling; debug overhead
+output:
+  root: outputs/online
+  run_name: run_{timestep}  # same naming contract as IL/Eval
