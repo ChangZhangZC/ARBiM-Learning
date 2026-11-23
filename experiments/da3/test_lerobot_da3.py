@@ -7,8 +7,8 @@ Run from the ARBiM-Learning repository root:
         --dataset-root /path/to/lerobot_dataset \
         --episode 0 \
         --frames 0 20 40 \
-        --camera observation.images.head_cam_h \
-        --model depth-anything/DA3-BASE \
+        --camera observation.images.wrist_cam_l \
+        --model depth-anything/DA3MONO-LARGE \
         --output-path outputs/da3_static_test
 
 Requires LeRobot, DA3 and their native dependencies installed in the environment.
@@ -23,7 +23,7 @@ import numpy as np
 from PIL import Image
 
 
-DEFAULT_CAMERA = "observation.images.head_cam_h"
+DEFAULT_CAMERA = "observation.images.wrist_cam_l"
 
 
 def parse_args():
@@ -39,7 +39,7 @@ def parse_args():
         help="LeRobot visual feature key, e.g. observation.images.wrist_cam_l",
     )
     parser.add_argument(
-        "--model", default="depth-anything/DA3-BASE",
+        "--model", default="depth-anything/DA3MONO-LARGE",
         help="DA3 Hugging Face model ID or local checkpoint directory",
     )
     parser.add_argument(
