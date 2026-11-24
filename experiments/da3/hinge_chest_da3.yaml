@@ -48,8 +48,9 @@ output:
   video_fps: null                # null=env.frequency, one frame per env step (+ reset)
 
 # Native RGB for DA3 comes from DuoBench raw frames at each new policy chunk.
-# Depth is saved as raw float arrays (.npy), not normalized grayscale images.
+# DA3 depth visualization PNG is always saved; raw float arrays are optional.
 da3:
+  npy-save: false              # true = also save raw depth .npy
   model: depth-anything/DA3MONO-LARGE
   device: cuda:0
   cameras:
