@@ -17,6 +17,11 @@ def parse_args():
     parser.add_argument("--model", default="depth-anything/DA3MONO-LARGE")
     parser.add_argument("--device", choices=("auto", "cuda", "cpu"), default="auto")
     parser.add_argument(
+        "--npy-save", "--npy_save", dest="npy_save",
+        type=str.lower, choices=("true", "false"), default="false",
+        help="Also save raw depth as .npy (default: false). RGB and depth visualization are always saved.",
+    )
+    parser.add_argument(
         "--output-path", "--output-dir", dest="output_path", type=Path,
         default=Path("outputs/da3_static_test"),
     )
@@ -29,6 +34,7 @@ def main():
     import torch
     from lerobot.datasets.lerobot_dataset import LeRobotDataset
     from depth_anything_3.api import DepthAnything3
+    from depth_anything_3.utils.visualize import visualize_depth
 
     dataset_root = args.dataset_root.expanduser().resolve()
     dataset = LeRobotDataset(
@@ -68,15 +74,18 @@ def main():
         image_path = output / f"{stem}_rgb.png"
         Image.fromarray(rgb).save(image_path)
 
-        # Single-frame inference; save native depth values, not a grayscale image.
+        # Single-frame inference; use the upstream depth visualization helper.
         with torch.inference_mode():
             prediction = model.inference(image=[str(image_path)])
 
         depth = np.asarray(prediction.depth)
         if depth.ndim != 3 or depth.shape[0] != 1:
             raise ValueError(f"Unexpected DA3 depth shape: {depth.shape}")
-        np.save(output / f"{stem}_depth.npy", depth[0])
-        print(f"Saved {stem}: RGB {rgb.shape}, depth {depth[0].shape}")
+        depth_vis = visualize_depth(depth[0])
+        Image.fromarray(depth_vis).save(output / f"{stem}_depth_vis.png")
+        if args.npy_save == "true":
+            np.save(output / f"{stem}_depth.npy", depth[0])
+        print(f"Saved {stem}: RGB {rgb.shape}, depth {depth[0].shape}, npy={args.npy_save}")
 
     print(f"Output: {output.resolve()}")
 
