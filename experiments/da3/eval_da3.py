@@ -72,19 +72,20 @@ class EpisodeVideoRecorder:
 
 
 class DA3ChunkRecorder:
-    """Save raw native wrist RGB and DA3 depth once for each new policy chunk."""
+    """Save native wrist RGB and rendered DA3 depth for each new policy chunk."""
 
     PREFIX = {"left_wrist": "wrist_left", "right_wrist": "wrist_right"}
     FIELDS = (
         "chunk_index", "env_step",
-        "wrist_left_rgb", "wrist_left_depth",
-        "wrist_right_rgb", "wrist_right_depth",
+        "wrist_left_rgb", "wrist_left_depth", "wrist_left_depth_npy",
+        "wrist_right_rgb", "wrist_right_depth", "wrist_right_depth_npy",
         "da3_inference_ms",
     )
 
-    def __init__(self, episode_folder: Path, model: Any, cameras: tuple[str, ...]):
+    def __init__(self, episode_folder: Path, model: Any, cameras: tuple[str, ...], npy_save: bool = False):
         self.model = model
         self.cameras = cameras
+        self.npy_save = npy_save
         self.folder = episode_folder / "da3"
         self.rgb_dir = self.folder / "rgb"
         self.depth_dir = self.folder / "depth"
@@ -100,6 +101,7 @@ class DA3ChunkRecorder:
     def write(self, raw: Mapping[str, Any], env_step: int, chunk_index: int) -> None:
         import torch
         from PIL import Image
+        from depth_anything_3.utils.visualize import visualize_depth
 
         if chunk_index != self.count:
             raise ValueError(f"Expected chunk index {self.count}, got {chunk_index}")
@@ -116,7 +118,7 @@ class DA3ChunkRecorder:
                 raise ValueError(f"Invalid native RGB for {camera}: {rgb.shape}, {rgb.dtype}")
 
             rgb_path = self.rgb_dir / f"{name}.png"
-            depth_path = self.depth_dir / f"{name}.npy"
+            depth_path = self.depth_dir / f"{name}.png"
             Image.fromarray(rgb, mode="RGB").save(rgb_path)
             started = time.perf_counter()
             with torch.inference_mode():
@@ -126,9 +128,14 @@ class DA3ChunkRecorder:
             depth = np.asarray(prediction.depth)
             if depth.ndim != 3 or depth.shape[0] != 1:
                 raise ValueError(f"Unexpected DA3 depth shape for {camera}: {depth.shape}")
-            np.save(depth_path, depth[0])
+            # Match the standalone test: use DA3's native depth renderer.
+            Image.fromarray(visualize_depth(depth[0])).save(depth_path)
             row[f"{self.PREFIX[camera]}_rgb"] = str(rgb_path.relative_to(self.folder))
             row[f"{self.PREFIX[camera]}_depth"] = str(depth_path.relative_to(self.folder))
+            if self.npy_save:
+                npy_path = depth_path.with_suffix(".npy")
+                np.save(npy_path, depth[0])
+                row[f"{self.PREFIX[camera]}_depth_npy"] = str(npy_path.relative_to(self.folder))
 
         row["da3_inference_ms"] = round(inference_ms, 3)
         self.writer.writerow(row)
@@ -180,6 +187,7 @@ def evaluate_episodes(
     camera_map: Mapping[str, str],
     execute_steps: int,
     max_env_steps: int,
+    da3_npy_save: bool = False,
     post_success_steps: int = 0,
     seed: int | None = None,
     deterministic: bool = True,
@@ -201,6 +209,8 @@ def evaluate_episodes(
         raise ValueError("record_video must be boolean.")
     if video_source != "native":
         raise ValueError("DA3 experiment requires output.video_source='native'.")
+    if type(da3_npy_save) is not bool:
+        raise ValueError("da3.npy-save must be boolean.")
     if len(da3_cameras) != 2 or set(da3_cameras) != {"left_wrist", "right_wrist"}:
         raise ValueError("DA3 cameras must be left_wrist and right_wrist.")
     if not isinstance(camera_map, Mapping) or set(camera_map.values()) != {
@@ -233,7 +243,7 @@ def evaluate_episodes(
                 EpisodeVideoRecorder(episode_folder, camera_map, video_fps)
                 if record_video else None
             )
-            da3_recorder = DA3ChunkRecorder(episode_folder, da3_model, da3_cameras)
+            da3_recorder = DA3ChunkRecorder(episode_folder, da3_model, da3_cameras, npy_save=da3_npy_save)
             def record_frame(observation: Mapping[str, Any], step: int) -> None:
                 if recorder is None:
                     return
@@ -363,6 +373,10 @@ def main() -> None:
     da3_model_name = da3_cfg.get("model")
     da3_device = da3_cfg.get("device", policy_cfg["device"])
     da3_cameras = da3_cfg.get("cameras")
+    da3_npy_save = da3_cfg.get("npy-save", False)
+    if type(da3_npy_save) is not bool:
+        raise ValueError("da3.npy-save must be boolean.")
+    da3_cfg["npy-save"] = da3_npy_save
     if not isinstance(da3_model_name, str) or not da3_model_name:
         raise ValueError("Set da3.model in the experiment YAML.")
     if not isinstance(da3_device, str) or not da3_device:
@@ -405,6 +419,7 @@ def main() -> None:
             num_episodes=num_episodes,
             da3_model=da3_model,
             da3_cameras=tuple(da3_cameras),
+            da3_npy_save=da3_npy_save,
             output_dir=run_dir,
             camera_map=env_cfg["camera_map"],
             execute_steps=rollout_cfg.get("execute_steps", policy.n_action_steps),
