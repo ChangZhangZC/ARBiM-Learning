@@ -13,7 +13,7 @@ def parse_args():
     parser.add_argument("--dataset-root", type=Path, required=True)
     parser.add_argument("--episode", type=int, default=0)
     parser.add_argument("--frames", type=int, nargs="+", default=[0])
-    parser.add_argument("--camera", default="observation.images.wrist_cam_l")
+    parser.add_argument("--camera", default="observation.images.left_wrist")
     parser.add_argument("--model", default="depth-anything/DA3MONO-LARGE")
     parser.add_argument("--device", choices=("auto", "cuda", "cpu"), default="auto")
     parser.add_argument(
