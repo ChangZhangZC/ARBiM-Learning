@@ -64,8 +64,7 @@ The monitor explicitly disables observation gripper binarization to match the
 continuous expert states observed in Hinge-Chest episode 20. Policy adapter
 settings and native action handling are unchanged. Verify raw environment
 observations still expose continuous gripper values during runtime testing.
-It records NLL and timing, does not change policy actions, and does not record
-video in this V1 entry point. Use existing DA3 eval separately for video.
+It records NLL and timing and does not change policy actions. Optional synchronized recording is described below.
 Check actual checkpoint and rollout config paths before running.
 
 ## Optional live MuJoCo monitor
@@ -90,7 +89,33 @@ display packet via an atomic temporary file, and restores the parent launch
 target after env.close(). No installed RCS or MuJoCo files are modified.
 If incompatible, run without --live-view and check the installed versions;
 do not upgrade blindly. Actual graphical runtime remains to be validated.
-This does not yet record video or full raw telemetry to disk.
+## Optional synchronized rollout recording
+
+```bash
+python -m experiments.geometry_flow.eval --model-dir outputs/geometry_flow/models --output outputs/geometry_flow/rollout_recorded --episodes 2 --live-view --record-video
+```
+
+Use --record-video independently of --live-view (including headless mode).
+Each episode subdirectory contains synchronized.mp4 (fixed MuJoCo free
+camera, current head RGB, sampled wrist RGB/depth/ROI and NLL plots),
+head_rgb.mp4, left_rgb.mp4, right_rgb.mp4, left_depth.mp4, right_depth.mp4,
+left_depth.npy, right_depth.npy, joint_state.npy, env_steps.npy, frame_index.csv,
+recording.json and final NLL plot PNGs when monitor samples exist.
+The top-level episode CSV and episode summary remain unchanged.
+
+The synchronized video is a deterministic step-indexed composition, **not
+a screen capture of the interactive GUI**; moving the GUI camera does not
+affect the fixed recording camera. It uses the existing simulation model and
+data for offscreen rendering without stepping it. Native camera RGB and the
+scene are captured at every environment observation (including reset and
+terminal frame). Videos use environment FPS; monitor images and scores are
+held until the next chunk and explicitly labeled with their sample step.
+Raw depth/joints are saved once per chunk; env_steps.npy indexes them.
+frame_index.csv maps every video frame to both environment and monitor steps.
+No duplicate DA3 inference. MP4/GL support and actual rendering still need
+local runtime verification. Recording adds render/encoding/I/O overhead
+outside monitor_ms; compare performance with recording disabled.
+Use a fresh output path. No recordings are created without --record-video.
 
 For threshold calibration, collect a separate set of successful policy
 rollouts with sufficient complete history, then run:

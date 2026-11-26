@@ -1,5 +1,6 @@
 """Hinge-Chest shadow evaluation using the existing DA3 chunk hook."""
 import argparse
+from contextlib import nullcontext
 import csv
 import json
 from pathlib import Path
@@ -8,6 +9,7 @@ import numpy as np
 from .common import load_config, write_json
 from .detector import GeometryMonitor
 from .viewer import live_overlay
+from .recording import EpisodeRecording, SceneRenderer
 
 def monitor_observation(raw, spec, camera_map):
     """Match raw expert state; never change the policy's gripper convention."""
@@ -26,10 +28,11 @@ def main():
     p.add_argument("--episodes",type=int)
     p.add_argument("--device",default="cuda:0")
     p.add_argument("--live-view",action="store_true",help="Overlay chunk-aligned NLL and DA3 depth in native MuJoCo GUI")
+    p.add_argument("--record-video",action="store_true",help="Save synchronized environment-step MP4s and chunk telemetry (independent of live view)")
     args=p.parse_args()
     cfg=load_config(args.rollout_config)
     ec,pc,rc=(cfg[k] for k in ("env","policy","rollout"))
-    monitor=GeometryMonitor(args.model_dir,args.device,cfg["da3"]["device"],capture=args.live_view)
+    monitor=GeometryMonitor(args.model_dir,args.device,cfg["da3"]["device"],capture=args.live_view or args.record_video)
     tc=monitor.contract["temporal"]
     if rc["execute_steps"]!=tc["sampling_stride"] or ec["frequency"]!=tc["rollout_frequency"]:
         raise ValueError("Rollout timing differs from trained Flow contract")
@@ -60,7 +63,7 @@ def main():
     write_json(out/"run_config.json",{"rollout":cfg,"model_contract":monitor.contract,
                                       "model_dir":str(Path(args.model_dir).resolve()),
                                       "checkpoint":args.checkpoint or pc["checkpoint_path"],
-                                      "monitor_binarize_state_gripper":False,"live_view":args.live_view})
+                                      "monitor_binarize_state_gripper":False,"live_view":args.live_view,"record_video":args.record_video})
     seed=rc.get("seed")
     seed_inference(seed)
     class StageAdapter(DuoBenchAdapter):
@@ -74,8 +77,11 @@ def main():
             return result
     with live_overlay(args.live_view,ec) as overlay:
         env=create_duobench_env(ec)
+        scene=None
         try:
-            adapter=(StageAdapter if overlay else DuoBenchAdapter)(env,spec,ec["camera_map"],
+            if args.record_video:
+                scene=SceneRenderer(env)
+            adapter=(StageAdapter if overlay or args.record_video else DuoBenchAdapter)(env,spec,ec["camera_map"],
                                    binarize_state_gripper=ec.get("binarize_state_gripper",True),
                                    gripper_threshold=ec.get("gripper_threshold",.9))
             with (out/"episodes.jsonl").open("w") as log:
@@ -84,7 +90,9 @@ def main():
                     if overlay:
                         overlay.reset()
                     path=out/f"episode_{ep:06d}.csv"
-                    with path.open("w",newline="") as f:
+                    record_context=EpisodeRecording(out/f"episode_{ep:06d}",ec["frequency"],
+                                                    monitor.meta["roi"],scene) if scene else nullcontext(None)
+                    with record_context as recording, path.open("w",newline="") as f:
                         writer=csv.DictWriter(f,fieldnames=["chunk_index","env_step","ready","left_nll","right_nll","monitor_ms"])
                         writer.writeheader()
                         def on_chunk(raw,step,chunk):
@@ -95,20 +103,29 @@ def main():
                             writer.writerow({"chunk_index":chunk,"env_step":step,**score,
                                              "monitor_ms":monitor_ms})
                             f.flush()
+                            if recording:
+                                recording.on_chunk(monitor.last_sample,chunk,adapter.monitor_stage,monitor_ms)
                             if overlay:
                                 overlay.publish(monitor.last_sample,monitor.meta["roi"],
                                                 ep,chunk,adapter.monitor_stage,monitor_ms)
+                        def on_frame(observation,step):
+                            recording.on_frame(adapter.last_raw_observation,step,adapter.monitor_stage)
                         result=run_single_episode_da3(adapter,policy,spec,
                              execute_steps=rc["execute_steps"],max_env_steps=rc["max_env_steps"],
                              post_success_steps=rc.get("post_success_steps",0),
                              seed=None if seed is None else seed+ep,
-                             deterministic=pc.get("deterministic",True),on_chunk=on_chunk)
+                             deterministic=pc.get("deterministic",True),on_chunk=on_chunk,
+                             on_frame=on_frame if recording else None)
                     row={"episode_index":ep,**result}
                     log.write(json.dumps(row,allow_nan=False)+"\n")
                     log.flush()
                     print(row,flush=True)
         finally:
-            env.close()
+            try:
+                if scene is not None:
+                    scene.close()
+            finally:
+                env.close()
 
 if __name__=="__main__":
     main()
