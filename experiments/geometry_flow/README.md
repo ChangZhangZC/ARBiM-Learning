@@ -68,6 +68,30 @@ It records NLL and timing, does not change policy actions, and does not record
 video in this V1 entry point. Use existing DA3 eval separately for video.
 Check actual checkpoint and rollout config paths before running.
 
+## Optional live MuJoCo monitor
+
+Run with the existing rollout config (env.headless: false) and a new output directory:
+
+```bash
+python -m experiments.geometry_flow.eval --model-dir outputs/geometry_flow/models --output outputs/geometry_flow/rollout_live --episodes 2 --live-view
+```
+
+This overlays the latest chunk's episode/step/stage, left/right NLL, warmup,
+gripper values and monitor timing, plus wrist RGB, full DA3 depth with ROI,
+cropped depth and separate NLL plots in the native MuJoCo window.
+Depth colors are per-frame visualization only; both plots have independent
+vertical scales. No threshold or recovery action. These are chunk samples,
+not per-environment-step scores. No extra DA3 inference.
+
+Requires an installed MuJoCo viewer exposing set_texts, set_images and viewport,
+and RCS using the verified v0.7.4-style gui_loop spawn target. The opt-in
+adapter wraps the native launch in the GUI child, transfers only the latest
+display packet via an atomic temporary file, and restores the parent launch
+target after env.close(). No installed RCS or MuJoCo files are modified.
+If incompatible, run without --live-view and check the installed versions;
+do not upgrade blindly. Actual graphical runtime remains to be validated.
+This does not yet record video or full raw telemetry to disk.
+
 For threshold calibration, collect a separate set of successful policy
 rollouts with sufficient complete history, then run:
 
