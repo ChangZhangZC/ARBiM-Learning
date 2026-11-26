@@ -1,22 +1,70 @@
 # Geometry Flow V1
 
-Independent experiment, no changes to IL/PPO or original DA3 experiment.
-Expert depth is generated at every frame, single-frame DA3MONO, float32 NPY,
-without scale alignment, smoothing, or frame-wise normalization.
-Select 5–10 confirmed successful demonstrations in config.yaml for smoke testing.
-Run from repository root:
+Experimental, independent of the policy. No recovery actions. No DA3 scale
+alignment, per-frame normalization, SAM2 or task-stage prediction.
+
+## Setup and smoke workflow
+
+From repository root, in the existing ARBiM environment:
 
 ```bash
-python -m experiments.geometry_flow.generate_depth --config experiments/geometry_flow/config.yaml
+pip install -r experiments/geometry_flow/requirements.txt
+python -m pytest tests/test_geometry_flow_data.py tests/test_geometry_flow_model.py tests/test_geometry_flow_history.py
 ```
 
-Each episode is written atomically and contains full-rate left/right depth,
-state, frame/global index, timestamps, and metadata. Existing output is never
-overwritten. Check free space first (two float32 depth maps per frame).
-The raw depth files can be reused for any later ROI or temporal sampling.
-ROI is intentionally null/full-frame until full training episodes are reviewed.
+Set data.dataset_root and 5–10 known successful episode IDs in config.yaml.
+Check storage: 2 * frames * H * W * 4 bytes for raw depth. Generate all frames:
 
-Target configuration: 30 Hz, execute_steps=16, T=8 (3.73 s), stride=16,
-window_stride=1; T configurable. Inference at chunk start only.
-Use identical RGB resolution and state convention for expert and rollout.
-Feature and monitoring implementations will be integrated in separate tasks.
+```bash
+python -m experiments.geometry_flow.generate_depth
+```
+
+Review full training episodes to select left/right normalized ROI bounds
+[x1,y1,x2,y2] (null means full image). Do not use held-out episodes to tune ROI.
+Use a fresh feature_root for changed ROI. Raw NPY needs no regeneration.
+
+```bash
+python -m experiments.geometry_flow.extract_features
+python -m experiments.geometry_flow.train
+python -m experiments.geometry_flow.eval --model-dir outputs/geometry_flow/models --output outputs/geometry_flow/rollout_smoke --episodes 2
+```
+
+The eval entry point reuses the existing DA3 rollout hook but obtains
+dataset-aligned RGB and state from DuoBenchAdapter rather than native raw RGB.
+It records NLL and timing, does not change policy actions, and does not record
+video in this V1 entry point. Use existing DA3 eval separately for video.
+Check actual checkpoint and rollout config paths before running.
+
+For threshold calibration, collect a separate set of successful policy
+rollouts with sufficient complete history, then run:
+
+```bash
+python -m experiments.geometry_flow.calibrate --rollout-dir outputs/geometry_flow/calibration --output outputs/geometry_flow/thresholds.json
+```
+
+Thresholds are empirical per-arm quantiles of episode maximum NLL; not
+failure probabilities or conformal guarantees. Evaluate on independent
+success/failure episodes with manually annotated local failure events.
+Calibration is offline; no threshold-triggered intervention.
+
+## Temporal contract
+
+Default T=8, stride=16 environment steps at 30 Hz, 3.73 s history.
+Training anchors slide one expert frame at a time; each window contains
+T samples spaced by the deployment interval. Exact FPS conversion required.
+No windows cross episode boundaries. Warm-up produces null scores until T
+chunk observations exist. Changing T or sampling interval requires retraining
+Flow only; features and raw depth remain reusable. Variable intervals rejected.
+Both flows receive identical full bimanual state history, while modeled
+geometry, PCA, weights, optimizer and score are side-specific.
+
+Raw depths are float32; fixed ROI resize to 224x224, replicate channels,
+fixed ImageNet mean/std (no per-frame depth rescaling). Frozen ImageNet
+ResNet18 pool2x2, train-only PCA and feature/state standardizers.
+Validation episodes excluded from PCA. This is a feature density, not depth
+pixel density. Explicitly check raw numerical range and domain gap.
+
+All output directories are non-overwriting. Use new paths for reruns.
+Check actual expert joint ordering, camera mapping, state gripper convention,
+FPS, raw depth range and runtime compatibility in integration testing.
+The initial 5–10 episodes are for smoke testing, not performance claims.
