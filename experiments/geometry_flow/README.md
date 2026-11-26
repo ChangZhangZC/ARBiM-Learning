@@ -26,6 +26,15 @@ python -m experiments.geometry_flow.generate_depth
 
 Review full training episodes to select left/right normalized ROI bounds
 [x1,y1,x2,y2] (null means full image). Do not use held-out episodes to tune ROI.
+Inspect a cached training episode (requires OpenCV, already used by DA3 video eval):
+```bash
+python -m experiments.geometry_flow.inspect_depth --episode 20 --output outputs/geometry_flow/inspect_20
+```
+Use --config for your local YAML and --color-mode frame for per-frame visualization.
+Default fixed color limits are computed separately for each side over the entire
+episode. Full view with ROI outline and cropped view appear side by side;
+MP4, keyframe montage, raw-depth stats CSV/PNG and summary JSON are saved.
+Visualization never changes NPY or training transforms.
 Use a fresh feature_root for changed ROI. Raw NPY needs no regeneration.
 
 ```bash
