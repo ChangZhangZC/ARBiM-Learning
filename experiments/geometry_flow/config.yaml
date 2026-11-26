@@ -1,0 +1,40 @@
+# Successful demonstrations only; explicitly select the episodes.
+data:
+  dataset_root: null
+  episode_ids: [] # select 5-10 successful expert episodes for smoke test
+  depth_root: outputs/geometry_flow/expert_depth
+  feature_root: outputs/geometry_flow/features
+  state_key: observation.state
+  cameras:
+    left: observation.images.left_wrist
+    right: observation.images.right_wrist
+  video_backend: null
+  val_ratio: 0.2
+  seed: 42
+da3:
+  model: depth-anything/DA3MONO-LARGE
+  device: cuda:0
+encoder:
+  device: cuda:0
+  feature_dim: 64
+  batch_size: 32
+  # Null = full image until reviewed against complete training episodes.
+  # Set independent [x_min, y_min, x_max, y_max] normalized bounds.
+  roi:
+    left: null
+    right: null
+temporal:
+  window_size: 8
+  sampling_stride: 16
+  window_stride: 1
+  rollout_frequency: 30
+flow:
+  layers: 6
+  hidden_dim: 256
+  residual_blocks: 2
+training:
+  device: cuda:0
+  batch_size: 128
+  learning_rate: 0.0001
+  epochs: 50
+  output: outputs/geometry_flow/models
