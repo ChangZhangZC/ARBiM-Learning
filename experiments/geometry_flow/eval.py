@@ -3,23 +3,31 @@ import argparse
 from contextlib import nullcontext
 import csv
 import json
+import os
+import sys
 from pathlib import Path
 import time
-import numpy as np
-from .common import load_config, write_json
-from .detector import GeometryMonitor
-from .viewer import live_overlay
-from .recording import EpisodeRecording, SceneRenderer
 
 def monitor_observation(raw, spec, camera_map):
     """Match raw expert state; never change the policy's gripper convention."""
     from arbim.envs.duobench import to_dataset_observation
     return to_dataset_observation(raw, spec, camera_map, binarize_state_gripper=False)
 
+def configure_recording_gl(enabled):
+    """Select EGL before importing MuJoCo/RCS on Linux; process-local only."""
+    if not enabled or not sys.platform.startswith("linux"):
+        return
+    mj = sys.modules.get("mujoco")
+    if mj is not None and getattr(getattr(mj, "GLContext", None), "__module__", "") != "mujoco.egl":
+        raise RuntimeError("MuJoCo was imported before EGL selection; start a fresh eval process")
+    platform = sys.modules.get("OpenGL.platform")
+    if platform is not None and "egl" not in type(getattr(platform, "PLATFORM", None)).__module__.lower():
+        raise RuntimeError("PyOpenGL was imported with a non-EGL backend; start a fresh eval process")
+    os.environ["MUJOCO_GL"] = "egl"
+    os.environ["PYOPENGL_PLATFORM"] = "egl"
+
+
 def main():
-    from arbim.envs.duobench import DuoBenchAdapter,create_duobench_env
-    from arbim.policy.inference_rl100_dp2d import load_inference_policy,seed_inference
-    from experiments.da3.rollout_da3 import run_single_episode_da3
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument("--rollout-config",default="experiments/da3/hinge_chest_da3.yaml")
     p.add_argument("--model-dir",required=True)
@@ -30,6 +38,17 @@ def main():
     p.add_argument("--live-view",action="store_true",help="Overlay chunk-aligned NLL and DA3 depth in native MuJoCo GUI")
     p.add_argument("--record-video",action="store_true",help="Save synchronized environment-step MP4s and chunk telemetry (independent of live view)")
     args=p.parse_args()
+    configure_recording_gl(args.record_video)
+    # Keep all model/simulator imports after GL backend selection.
+    from .common import load_config, write_json
+    from .detector import GeometryMonitor
+    from .viewer import live_overlay
+    from .recording import EpisodeRecording, SceneRenderer
+    from arbim.envs.duobench import DuoBenchAdapter,create_duobench_env
+    from arbim.policy.inference_rl100_dp2d import load_inference_policy,seed_inference
+    from experiments.da3.rollout_da3 import run_single_episode_da3
+    if args.record_video and sys.platform.startswith("linux"):
+        print("[RECORD] MUJOCO_GL=egl PYOPENGL_PLATFORM=egl",flush=True)
     cfg=load_config(args.rollout_config)
     ec,pc,rc=(cfg[k] for k in ("env","policy","rollout"))
     monitor=GeometryMonitor(args.model_dir,args.device,cfg["da3"]["device"],capture=args.live_view or args.record_video)
@@ -63,7 +82,9 @@ def main():
     write_json(out/"run_config.json",{"rollout":cfg,"model_contract":monitor.contract,
                                       "model_dir":str(Path(args.model_dir).resolve()),
                                       "checkpoint":args.checkpoint or pc["checkpoint_path"],
-                                      "monitor_binarize_state_gripper":False,"live_view":args.live_view,"record_video":args.record_video})
+                                      "monitor_binarize_state_gripper":False,"live_view":args.live_view,"record_video":args.record_video,
+                                      "render_backend_env":{"MUJOCO_GL":os.environ.get("MUJOCO_GL"),
+                                                            "PYOPENGL_PLATFORM":os.environ.get("PYOPENGL_PLATFORM")}})
     seed=rc.get("seed")
     seed_inference(seed)
     class StageAdapter(DuoBenchAdapter):
