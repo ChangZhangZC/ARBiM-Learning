@@ -1,4 +1,4 @@
-"""Export a standalone browser ROI selector from cached depth (no desktop GUI)."""
+"""Select fixed ROIs locally; optional legacy standalone HTML export."""
 import argparse
 import base64
 import json
@@ -192,13 +192,186 @@ def export_roi(cfg, episode, output, stride=1, color_mode="frame"):
     print(f"Saved {output.resolve()}")
 
 
+
+def pixel_bounds(rect, width, height):
+    """Normalize half-open pixel bounds without int() rounding down one pixel."""
+    x1, y1, x2, y2 = rect
+    if not (0 <= x1 < x2 <= width and 0 <= y1 < y2 <= height):
+        raise ValueError("Invalid pixel ROI")
+    return [v/n if v in (0,n) else (v+1e-9)/n
+            for v,n in zip(rect,(width,height,width,height))]
+
+
+def check_display():
+    """Probe HighGUI in a child process: Qt can abort rather than raise."""
+    import os
+    import subprocess
+    import sys
+    if sys.platform.startswith("linux") and not (
+        os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")
+    ):
+        raise RuntimeError("No graphical display. Run this command in a terminal "
+                           "opened on the Ubuntu desktop, not a plain SSH session.")
+    probe = (
+        "import os\n"
+        "if os.name == 'posix':\n"
+        " import resource\n"
+        " resource.setrlimit(resource.RLIMIT_CORE,(0,0))\n"
+        "import cv2\n"
+        "cv2.namedWindow('ROI display check',cv2.WINDOW_AUTOSIZE)\n"
+        "cv2.destroyAllWindows()\n"
+    )
+    try:
+        result = subprocess.run([sys.executable, "-c", probe],
+                                capture_output=True, text=True, timeout=15)
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError("OpenCV display check timed out. Use a local desktop terminal.") from exc
+    if result.returncode:
+        raise RuntimeError("OpenCV cannot open a local display. Check DISPLAY, "
+                           "desktop permissions and GUI-enabled OpenCV.\n"
+                           + result.stderr[-1800:])
+
+
+def select_local(cfg, episode, output=None, stride=1, color_mode="frame", frame=0):
+    """Browse one episode and select fixed left/right ROI with native HighGUI."""
+    import cv2
+    import yaml
+    if episode < 0 or stride < 1 or color_mode not in ("frame","fixed"):
+        raise ValueError("Invalid episode, stride or color mode")
+    if output is not None:
+        output = Path(output).expanduser()
+        if output.suffix.lower() not in (".yaml",".yml"):
+            raise ValueError("Local selector output must be YAML")
+        if output.exists():
+            raise FileExistsError(output)
+    source = Path(cfg["data"]["depth_root"]).expanduser()/f"episode_{episode:06d}"
+    meta = read_json(source/"meta.json")
+    n = int(meta["frames"])
+    if meta["episode_id"] != episode or n < 1 or not 0 <= frame < n:
+        raise ValueError("Invalid episode metadata or starting frame")
+    arrays = {s:np.load(source/f"depth_{s}.npy",mmap_mode="r") for s in SIDES}
+    indices = sorted(set(range(0,n,stride)) | {n-1,frame})
+    bounds = dict(cfg["encoder"]["roi"])
+    rects, limits = {}, {}
+    for s,d in arrays.items():
+        if d.ndim != 3 or len(d) != n or min(d.shape[1:]) < 1:
+            raise ValueError(f"Invalid {s} depth shape")
+        crop_roi(d[0],bounds[s])
+        h,w = d.shape[1:]
+        b = bounds[s]
+        rects[s] = None if b is None else [
+            int(b[0]*w),int(b[1]*h),int(b[2]*w),int(b[3]*h)]
+    check_display()
+    if color_mode == "fixed":
+        for s,d in arrays.items():
+            limits[s] = (float(d.min()),float(d.max()))
+            if not np.isfinite(limits[s]).all():
+                raise ValueError(f"Nonfinite {s} depth")
+    window = "ARBiM ROI | 1 Left | 2 Right | R Reset | S Save | Q Quit"
+    side = "left"
+    pos = indices.index(frame)
+    start = None
+    preview = None
+    saved = False
+    dirty = True
+
+    def mouse(event,x,y,flags,param):
+        nonlocal start,preview,dirty
+        h,w = arrays[side].shape[1:]
+        x,y = max(0,min(w-1,x)),max(0,min(h-1,y))
+        if event == cv2.EVENT_LBUTTONDOWN:
+            start = (x,y)
+            preview = None
+        elif event in (cv2.EVENT_MOUSEMOVE,cv2.EVENT_LBUTTONUP) and start is not None:
+            a,b = start
+            preview = [min(a,x),min(b,y),max(a,x)+1,max(b,y)+1]
+            if event == cv2.EVENT_LBUTTONUP:
+                if a != x and b != y:
+                    rects[side] = preview
+                    bounds[side] = pixel_bounds(preview,w,h)
+                    print(f"{side}: pixels {preview}; normalized {bounds[side]}",flush=True)
+                start = preview = None
+        dirty = True
+
+    print("Drag a rectangle. 1=left, 2=right, A/D=previous/next frame, "
+          "R=full image, S=save both ROI, Q/Esc=quit without saving.",flush=True)
+    try:
+        cv2.namedWindow(window,cv2.WINDOW_AUTOSIZE)
+        cv2.createTrackbar("Frame index",window,pos,max(1,len(indices)-1),lambda _:None)
+        cv2.setMouseCallback(window,mouse)
+        last = None
+        image = None
+        while True:
+            if cv2.getWindowProperty(window,cv2.WND_PROP_VISIBLE) < 1:
+                break
+            new_pos = min(cv2.getTrackbarPos("Frame index",window),len(indices)-1)
+            if new_pos != pos:
+                pos = new_pos
+                start = preview = None
+            current = (side,pos)
+            if current != last:
+                d = arrays[side][indices[pos]]
+                lo,hi = limits[side] if color_mode == "fixed" else (float(d.min()),float(d.max()))
+                image = colorize(d,lo,hi)
+                last = current
+                dirty = True
+                print(f"{side} | frame {indices[pos]}/{n-1} | ROI {rects[side]}",flush=True)
+            if dirty:
+                vis = image.copy()
+                r = preview if preview is not None else rects[side]
+                if r is not None:
+                    x,y,X,Y = r
+                    shaded = (vis*0.45).astype(np.uint8)
+                    shaded[y:Y,x:X] = vis[y:Y,x:X]
+                    vis = shaded
+                    cv2.rectangle(vis,(x,y),(X-1,Y-1),(0,255,255),1)
+                cv2.imshow(window,vis)
+                dirty = False
+            key = cv2.waitKey(30) & 0xff
+            if key in (ord("q"),27):
+                break
+            if key in (ord("1"),ord("2")):
+                side = "left" if key == ord("1") else "right"
+                start = preview = None
+                dirty = True
+            elif key in (ord("a"),ord("d")):
+                cv2.setTrackbarPos("Frame index",window,
+                                   max(0,min(len(indices)-1,pos+(1 if key==ord("d") else -1))))
+            elif key == ord("r"):
+                bounds[side] = rects[side] = None
+                start = preview = None
+                dirty = True
+            elif key == ord("s"):
+                saved = True
+                break
+    finally:
+        cv2.destroyAllWindows()
+    if not saved:
+        print("ROI selection cancelled; no files changed.")
+        return
+    text = yaml.safe_dump({"encoder":{"roi":bounds}},sort_keys=False,default_flow_style=None)
+    print("\n"+text)
+    if output is not None:
+        output.parent.mkdir(parents=True,exist_ok=True)
+        with output.open("x",encoding="utf-8") as f:
+            f.write(text)
+        print(f"Saved {output.resolve()}")
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", default="experiments/geometry_flow/config.yaml")
     parser.add_argument("--episode", required=True, type=int)
-    parser.add_argument("--output", required=True)
-    parser.add_argument("--stride", default=1, type=int,
-                        help="Preview every N frames; does not affect training")
+    parser.add_argument("--output", help="Optional new YAML file; .html selects legacy export")
+    parser.add_argument("--frame", default=0, type=int, help="Initial frame for local GUI")
+    parser.add_argument("--stride", default=1, type=int, help="Preview stride only")
     parser.add_argument("--color-mode", choices=["frame", "fixed"], default="frame")
     args = parser.parse_args()
-    export_roi(load_config(args.config), args.episode, args.output, args.stride, args.color_mode)
+    cfg = load_config(args.config)
+    try:
+        if args.output and Path(args.output).suffix.lower()==".html":
+            export_roi(cfg,args.episode,args.output,args.stride,args.color_mode)
+        else:
+            select_local(cfg,args.episode,args.output,args.stride,args.color_mode,args.frame)
+    except RuntimeError as exc:
+        parser.exit(1,f"ROI selector: {exc}\n")
