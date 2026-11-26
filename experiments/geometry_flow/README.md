@@ -44,7 +44,11 @@ python -m experiments.geometry_flow.eval --model-dir outputs/geometry_flow/model
 ```
 
 The eval entry point reuses the existing DA3 rollout hook but obtains
-dataset-aligned RGB and state from DuoBenchAdapter rather than native raw RGB.
+dataset-aligned RGB via the existing DuoBench observation conversion rather than native raw RGB.
+The monitor explicitly disables observation gripper binarization to match the
+continuous expert states observed in Hinge-Chest episode 20. Policy adapter
+settings and native action handling are unchanged. Verify raw environment
+observations still expose continuous gripper values during runtime testing.
 It records NLL and timing, does not change policy actions, and does not record
 video in this V1 entry point. Use existing DA3 eval separately for video.
 Check actual checkpoint and rollout config paths before running.

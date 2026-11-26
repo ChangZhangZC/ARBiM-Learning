@@ -8,6 +8,11 @@ import numpy as np
 from .common import load_config, write_json
 from .detector import GeometryMonitor
 
+def monitor_observation(raw, spec, camera_map):
+    """Match raw expert state; never change the policy's gripper convention."""
+    from arbim.envs.duobench import to_dataset_observation
+    return to_dataset_observation(raw, spec, camera_map, binarize_state_gripper=False)
+
 def main():
     from arbim.envs.duobench import DuoBenchAdapter,create_duobench_env
     from arbim.policy.inference_rl100_dp2d import load_inference_policy,seed_inference
@@ -52,7 +57,8 @@ def main():
     out.mkdir(parents=True,exist_ok=False)
     write_json(out/"run_config.json",{"rollout":cfg,"model_contract":monitor.contract,
                                       "model_dir":str(Path(args.model_dir).resolve()),
-                                      "checkpoint":args.checkpoint or pc["checkpoint_path"]})
+                                      "checkpoint":args.checkpoint or pc["checkpoint_path"],
+                                      "monitor_binarize_state_gripper":False})
     seed=rc.get("seed")
     seed_inference(seed)
     env=create_duobench_env(ec)
@@ -70,7 +76,7 @@ def main():
                     def on_chunk(raw,step,chunk):
                         start=time.perf_counter()
                         # Dataset-aligned observation, not native unresized RGB.
-                        score=monitor.observe(adapter.observation(raw),step)
+                        score=monitor.observe(monitor_observation(raw,spec,ec["camera_map"]),step)
                         writer.writerow({"chunk_index":chunk,"env_step":step,**score,
                                          "monitor_ms":(time.perf_counter()-start)*1000})
                         f.flush()
