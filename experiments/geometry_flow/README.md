@@ -35,6 +35,16 @@ Default fixed color limits are computed separately for each side over the entire
 episode. Full view with ROI outline and cropped view appear side by side;
 MP4, keyframe montage, raw-depth stats CSV/PNG and summary JSON are saved.
 Visualization never changes NPY or training transforms.
+For headless servers, export an interactive browser ROI selector:
+```bash
+python -m experiments.geometry_flow.select_roi --config experiments/geometry_flow/config.yaml --episode 20 --output outputs/geometry_flow/roi_20.html
+```
+Download/open the standalone HTML in a local browser. Drag independent ROI
+rectangles, browse all frames with the slider, and copy the encoder.roi YAML
+into the existing config. No Qt, X11, display forwarding or web server needed.
+The optional --stride 4 makes smaller previews (not a training change).
+Default per-frame color mapping is visualization only; --color-mode fixed
+uses each side's full-episode range. The tool never edits NPY or config.
 Use a fresh feature_root for changed ROI. Raw NPY needs no regeneration.
 
 ```bash
