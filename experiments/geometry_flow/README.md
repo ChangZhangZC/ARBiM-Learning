@@ -13,6 +13,11 @@ python -m pytest tests/test_geometry_flow_data.py tests/test_geometry_flow_model
 ```
 
 Set data.dataset_root and 5–10 known successful episode IDs in config.yaml.
+Both depth generation and feature extraction support a list of IDs, a quoted
+half-open range (e.g. "0:100"), or all. All means every episode in the source
+dataset, not automatic success filtering; the caller must verify success.
+Use --skip-existing on generate_depth to reuse matching structurally complete
+cached episodes. Default behavior rejects existing outputs; no overwrites.
 Check storage: 2 * frames * H * W * 4 bytes for raw depth. Generate all frames:
 
 ```bash
