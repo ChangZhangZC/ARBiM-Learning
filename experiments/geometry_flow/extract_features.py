@@ -7,6 +7,7 @@ import numpy as np
 from sklearn.decomposition import PCA
 from .common import SIDES, load_config, read_json, write_json
 from .depth_encoder import DepthEncoder
+from .episode_selection import resolve_episode_ids
 
 def split_episodes(ids, ratio, seed):
     if len(ids) < 2 or not 0 < ratio < 1:
@@ -27,9 +28,17 @@ def project(x, params, side):
 
 def extract(cfg):
     data, enc = cfg["data"], cfg["encoder"]
-    ids = data["episode_ids"]
+    from lerobot.datasets import LeRobotDatasetMetadata
+    if not data["dataset_root"]:
+        raise ValueError("Set data.dataset_root")
+    dataset_root = Path(data["dataset_root"]).expanduser().resolve()
+    dataset_meta = LeRobotDatasetMetadata(dataset_root.name, root=dataset_root)
+    ids = resolve_episode_ids(data["episode_ids"], int(dataset_meta.total_episodes))
     train,val = split_episodes(ids,data["val_ratio"],data["seed"])
     source = Path(data["depth_root"]).expanduser()
+    missing = [ep for ep in ids if not (source/f"episode_{ep:06d}"/"meta.json").is_file()]
+    if missing:
+        raise FileNotFoundError(f"Generate missing expert depths first: {missing}")
     target = Path(data["feature_root"]).expanduser()
     if target.exists():
         raise FileExistsError(target)
@@ -43,7 +52,10 @@ def extract(cfg):
             src,dst = source/name,temp/name
             dst.mkdir()
             meta = read_json(src/"meta.json")
-            if meta["episode_id"] != ep or meta["da3_model"] != cfg["da3"]["model"]:
+            if (meta["episode_id"] != ep or meta["da3_model"] != cfg["da3"]["model"]
+                    or meta["dataset_root"] != str(dataset_root)
+                    or meta["camera_keys"] != data["cameras"]
+                    or meta["state_key"] != data["state_key"]):
                 raise ValueError("Expert metadata mismatch")
             contract = {k:meta[k] for k in ("fps","dataset_root","state_key","state_names","camera_keys","rgb_shapes","da3_model")}
             if meta0 is not None and contract != meta0:
