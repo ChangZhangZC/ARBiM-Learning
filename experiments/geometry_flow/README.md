@@ -96,6 +96,13 @@ python -m experiments.geometry_flow.eval --model-dir outputs/geometry_flow/model
 ```
 
 Use --record-video independently of --live-view (including headless mode).
+On Linux, the recording entry point automatically sets MUJOCO_GL=egl and
+PYOPENGL_PLATFORM=egl before importing simulation/model modules. This avoids
+the GLFW/GLX context creation conflict observed with RCS. The setting is
+local to the evaluation process and its children; no shell exports or
+installation changes are needed. Non-recording runs and non-Linux platforms
+retain their existing backend configuration. If an incompatible GL backend
+was already imported, start a fresh Python process.
 Each episode subdirectory contains synchronized.mp4 (fixed MuJoCo free
 camera, current head RGB, sampled wrist RGB/depth/ROI and NLL plots),
 head_rgb.mp4, left_rgb.mp4, right_rgb.mp4, left_depth.mp4, right_depth.mp4,
